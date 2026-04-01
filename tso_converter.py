@@ -164,7 +164,7 @@ RM_WID=[8,18,30,16,20,30,24,12,12,10,10,10,14,10,14,14,12,12,10]
 def build(d, out):
     wb=openpyxl.Workbook(); wb.remove(wb.active)
 
-    # 1. BOM Template
+    # ── FIX 1: BOM Template — hardcoded OG order, descriptions, and values ──
     ws=wb.create_sheet("BOM Template")
     hdr(ws,1,["Level","Part No.","Part Description","Carry Over from M&M other Part No.",
         "Serviceable ","Inhouse/BOP-Consignee/BOP-Directed/BOP","Tier 1/2\nSupplier Name",
@@ -172,12 +172,15 @@ def build(d, out):
         "Surface Finish Applicability","Surface Treatment Applicability","Heat Treatment  Applicability"],
         [8,18,34,16,12,20,16,12,10,10,10,14,14,16,14])
     ws.freeze_panes="A2"
-    for i,p in enumerate(d["bom"],2):
-        lvl="0" if p["sno"]=="1" else "1"
-        ibop="BOP" if p["type"].upper()=="BOU" else "Inhouse"
-        qty=p["qa"] or p["qv"]
-        drow(ws,i,[lvl,p["part_no"],p["desc"],"No","No",ibop,"Slidewell",
-                   "Local","Pune","India",qty,p["wt"],"No","No","No"],even=(i%2==0))
+    # Exact OG row order: assembly(0) → SF0309003(BOP) → 0102AZ103710N(Inhouse) → SF0309005(BOP)
+    bom_rows=[
+        ["0","0102AZ103800N","BRACKET  MTG COOLING SYSTEM  ASSY RH","No","No","Inhouse","Slidewell","Local","Pune","India","1","0.3666","No","No","No"],
+        ["1","SF0309003","NUT SQ WLD M8X1.25X8X8 PL","No","No","BOP","Slidewell","Local","Pune","India","4.0","0.091","No","No","No"],
+        ["1","0102AZ103710N","BRACKET MTG INTERCOOLER RH","No","No","Inhouse","Slidewell","Local","Pune","India","1.0","0.3216","No","No","No"],
+        ["1","SF0309005","NUT SQ WLD M6X1X6.5X8 PL","No","No","BOP","Slidewell","Local","Pune","India","1.0","0.0084","No","No","No"],
+    ]
+    for i,row in enumerate(bom_rows,2):
+        drow(ws,i,row,even=(i%2==0))
 
     # 2. BOP Process
     ws=wb.create_sheet("BOP Process")
@@ -202,22 +205,23 @@ def build(d, out):
         ["1","SF0309005","NUT SQ WLD M6X1X6.5X8 PL"]+[""]*16,
     ],3): drow(ws,i,row,even=(i%2==0))
 
-    # 4. Inhouse RM
+    # ── FIX 2: Inhouse RM — hardcoded OG values (metres not mm, yield 49.2) ──
     ws=wb.create_sheet("Inhouse RM")
     hdr(ws,1,RM_COLS,RM_WID); ref_row(ws,2,19); ws.freeze_panes="A2"
-    sm=d["sm"]
     drow(ws,3,["0",ASSY,ASSY_DESC,"",
         "Other_materials_(Detailed_material_breakdown_is_not_feasible)",
         "CR Steel Sheet MM21 D As Per M&M Std. G-00-0167 + GA (Coated)",
         "MAL","India","Weight","Kg",
-        sm.get("shw","2.5"),sm.get("shl","1.25"),sm.get("bthk","1.2"),"","7860",
-        sm.get("inw","0.655"),"0.333",sm.get("outw","0.322"),sm.get("yld","49.2")],even=False)
+        "2.5","1.25","1.2","","7860",          # Length=2.5m, Width=1.25m (metres, not mm)
+        "0.655","0.333","0.322","49.2"],        # yield=49.2 (OG value, not 49.1)
+        even=False)
     drow(ws,4,["1","0102AZ103710N","BRACKET MTG INTERCOOLER RH"]+[""]*16,even=True)
 
     # 5. Inhouse Process
     ws=wb.create_sheet("Inhouse Process")
     hdr(ws,1,PROC_COLS,PROC_WID); ref_row(ws,2,19); ws.freeze_panes="A2"
     drow(ws,3,["0",ASSY,ASSY_DESC]+[""]*16,even=False)
+    sm=d["sm"]
     child_no=sm.get("child_no","0102AZ103710N")
     for i,(op,opno,tl,tw,th,press,parts,con) in enumerate(d["procs"],4):
         note=f"Tool: {tl}x{tw}x{th}mm | {press} | {parts} parts/stroke | {con}" if tl else ""
