@@ -407,7 +407,39 @@ def build(d, out):
         for i,row in enumerate(d["tl"],2): drow(ws,i,row,even=(i%2==0))
 
     wb.save(out)
-    import sys
-    if not hasattr(out, 'write'):
-        print(f"Saved -> {out}")
-        print(f"Sheets ({len(wb.worksheets)}): {[s.title for s in wb.worksheets]}")
+    print(f"Saved -> {out}")
+    print(f"Sheets ({len(wb.worksheets)}): {[s.title for s in wb.worksheets]}")
+
+
+# ── MAIN ──────────────────────────────────────────────────────────────────────
+def main():
+    if len(sys.argv)>1:
+        pdf=Path(sys.argv[1])
+        out=Path(sys.argv[2]) if len(sys.argv)>2 else pdf.with_suffix(".xlsx")
+    else:
+        import tkinter as tk
+        from tkinter import filedialog, messagebox
+        root=tk.Tk(); root.withdraw()
+        ps=filedialog.askopenfilename(title="Select TSO PDF",
+            filetypes=[("PDF","*.pdf"),("All","*.*")])
+        if not ps: messagebox.showinfo("Cancelled","No file selected."); return
+        pdf=Path(ps)
+        os=filedialog.asksaveasfilename(title="Save Excel As",defaultextension=".xlsx",
+            initialfile=pdf.stem+".xlsx",filetypes=[("Excel","*.xlsx"),("All","*.*")])
+        if not os: messagebox.showinfo("Cancelled","No save location."); return
+        out=Path(os)
+    try:
+        print(f"Reading: {pdf}")
+        d=parse(pdf)
+        build(d,out)
+        if len(sys.argv)<=1:
+            from tkinter import messagebox
+            messagebox.showinfo("Done!","Excel saved to:\n"+str(out))
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        if len(sys.argv)<=1:
+            from tkinter import messagebox
+            messagebox.showerror("Error",str(e))
+
+if __name__=="__main__":
+    main()
