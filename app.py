@@ -5,10 +5,6 @@ Accepts either a TSO PDF or a filled TSO Excel as input source.
 - PDF input  : extracts data via pdfplumber (pages 1-4)
 - Excel input: reads data directly from the uploaded workbook's sheets
 
-Zero hardcoded data values.
-- All dropdown values read from Library sheet at runtime
-- All structural values read from template rows at runtime
-- PROC_RULES maps PDF keyword patterns → Library search terms
 
 Usage (CLI):
     python app.py INPUT.(pdf|xlsx) TEMPLATE.xlsx OUT.xlsx
