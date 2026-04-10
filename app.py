@@ -525,406 +525,238 @@ def parse_input(input_path):
 # EXCEL WRITER
 # ─────────────────────────────────────────────────────────────────────────────
 def write_excel(data, template_path, out_path):
+    """
+    Strategy: TEMPLATE-FIRST.
+    The template already contains the correct row structure, part numbers, descriptions,
+    dropdown values, RM grade, supplier, dimensions, density, process op structure, etc.
+    We copy the template verbatim, then overlay ONLY the values that are dynamic per PDF:
+      - BOM: CAD weight (col 12), surface treatment (col 14) — only if template has blank
+      - Inhouse RM: gross weight (col 16), net weight (col 18), thickness (col 13)
+                    plus formulas for scrap (col 17) and yield (col 19)
+                    Flag RM Grade if it differs from PDF
+      - Inhouse Process: FTG Name (col 9), tonnage (col 18), press type (col 12),
+                         parts/stroke (col 15), construct/remarks (col 19)
+                         for each stamping op row — matched by sub-op keyword
+    No values are hardcoded — everything comes from template rows or PDF extraction.
+    """
     flags = []
     shutil.copy2(str(template_path), str(out_path))
     wb = load_workbook(str(out_path))
-    lib = load_library(wb)
 
-    tpl_bom_rows, tpl_row_order = read_template_bom(wb)
-    tpl_rm3  = read_template_row(wb, 'Inhouse RM', 3)
-    tpl_proc = read_template_proc_structure(wb)
-
-    meta         = data['meta']
-    bom          = data['bom']
     stamp        = data['inhouse_rm']
     tool_ops     = data['tool_ops']
     process_rows = data.get('process_rows', [])
     source       = data.get('source', 'pdf')
 
-    # BOM lookup by normalised part no
+    # ── BOM Template ──────────────────────────────────────────────────────────
+    # Template already has all correct values.
+    # Only override CAD weight (col 12) and surface treatment (col 14) from PDF
+    # when the template cell is blank.
+    ws_bom = wb['BOM Template']
+
+    # Build PDF BOM lookup by part number
     pdf_bom = {}
-    for p in bom:
-        raw = str(p['part_no']).strip()
-        pdf_bom[raw] = p
-        if raw and not raw.startswith('0') and raw[0].isdigit():
-            pdf_bom['0' + raw] = p
+    for p in data['bom']:
+        pno = str(p['part_no']).strip()
+        pdf_bom[pno] = p
 
-    # ── BOM Template ──────────────────────────────────────────────────────
-    ws = wb['BOM Template']
+    for r in range(3, ws_bom.max_row + 1):
+        pno = str(ws_bom.cell(r, 2).value or '').strip()
+        if not pno:
+            continue
+        pdf_p = pdf_bom.get(pno, {})
 
-    # City / supplier from meta (for BOM dropdown fill)
-    supplier_name = meta.get('supplier', '')
-    # Strip legal suffix from supplier name for shorter display
-    supplier_short = re.sub(r'\s+(PVT\.?\s*LTD\.?|LTD\.?|INC\.?|CORP\.?).*$', '',
-                            supplier_name, flags=re.IGNORECASE).strip()
-    city = meta.get('stamping_loc', '')
-    # Normalise city to title case
-    if city:
-        city = city.strip().title()
+        # CAD weight (col 12) — use PDF value if template has none
+        if not ws_bom.cell(r, 12).value and pdf_p.get('cad_wt'):
+            try:    sv(ws_bom, r, 12, float(pdf_p['cad_wt']))
+            except: sv(ws_bom, r, 12, pdf_p['cad_wt'])
 
-    for i, canon_pno in enumerate(tpl_row_order):
-        r = i + 3
-        trow = tpl_bom_rows.get(canon_pno)
-        if not trow: continue
-        pdf_p = pdf_bom.get(canon_pno, {})
+        # Surface Treatment (col 14) — use PDF value if template has none
+        if not ws_bom.cell(r, 14).value and pdf_p.get('surface_treatment'):
+            sv(ws_bom, r, 14, pdf_p['surface_treatment'])
 
-        # Write template structural cols (all except 11, 12 which we handle below)
-        for col, val in enumerate(trow, 1):
-            if col in (11, 12): continue
-            sv(ws, r, col, val)
+    # ── Inhouse RM ────────────────────────────────────────────────────────────
+    # Template row 3 already has level, pno, desc, RM grade, supplier, country,
+    # parameter, UOM, length, width, density — copy verbatim.
+    # Override: thickness (col 13) from PDF, gross (col 16) and net (col 18) from PDF.
+    # Add formulas for scrap (col 17) and yield (col 19).
+    ws_rm = wb['Inhouse RM']
+    tpl_rm3 = [ws_rm.cell(3, c).value for c in range(1, ws_rm.max_column + 1)]
 
-        sv(ws, r, 11, trow[10])
-        sv(ws, r, 12, pdf_p.get('cad_wt') or trow[11])
+    # All template values for row 3 are already in place (file was copied from template).
+    # Just overlay the PDF-dynamic values:
 
-        # FIX: Fill BOM columns that come from PDF/defaults if template has them blank
-        # Col D (4): Carry Over → default 'No'
-        if not ws.cell(r, 4).value:
-            sv(ws, r, 4, 'No')
+    # Thickness (col 13) — PDF blank_thk is more reliable than template for new parts
+    blank_thk = stamp.get('blank_thk', '')
+    if blank_thk:
+        try:    sv(ws_rm, 3, 13, float(blank_thk))
+        except: sv(ws_rm, 3, 13, blank_thk)
 
-        # Col E (5): Serviceable → default 'No'
-        if not ws.cell(r, 5).value:
-            sv(ws, r, 5, 'No')
-
-        # Col F (6): Inhouse/BOP-Consignee/BOP-Directed/BOP → from PDF type_part
-        if not ws.cell(r, 6).value:
-            type_part = str(pdf_p.get('type_part', '')).upper()
-            if type_part in ('BOU', 'BOP'):
-                sv(ws, r, 6, 'BOP')
-            elif type_part in ('STAMPED', 'INHOUSE'):
-                sv(ws, r, 6, 'Inhouse')
-
-        # Col G (7): Supplier Name → from meta
-        if not ws.cell(r, 7).value and supplier_short:
-            sv(ws, r, 7, supplier_short)
-
-        # Col H (8): Import/Local → default 'Local' (India-based)
-        if not ws.cell(r, 8).value:
-            sv(ws, r, 8, 'Local')
-
-        # Col I (9): City → from meta stamping_loc
-        if not ws.cell(r, 9).value and city:
-            sv(ws, r, 9, city)
-
-        # Col J (10): Country → default 'India'
-        if not ws.cell(r, 10).value:
-            sv(ws, r, 10, 'India')
-
-        # Col M (13): Surface Finish → default 'No'
-        if not ws.cell(r, 13).value:
-            sv(ws, r, 13, 'No')
-
-        # Col N (14): Surface Treatment → from PDF BOM surface_treatment field
-        if not ws.cell(r, 14).value:
-            st = pdf_p.get('surface_treatment', '')
-            if st:
-                sv(ws, r, 14, st)
-
-        # Col O (15): Heat Treatment → default 'No'
-        if not ws.cell(r, 15).value:
-            sv(ws, r, 15, 'No')
-
-    # ── Inhouse RM ────────────────────────────────────────────────────────
-    ws = wb['Inhouse RM']
-    r = 3
-
-    # FIX: write ALL template structural values first (not skipping structural cols)
-    for col, val in enumerate(tpl_rm3, 1):
-        if col in (16, 17, 18, 19): continue  # only skip computed cols
-        sv(ws, r, col, val)
-
-    child_part = select_child_part(bom)
-
-    # FIX: write level / part_no / desc for child part (cols A, B, C)
-    if child_part:
-        child_pno = str(child_part['part_no']).strip()
-        # normalise: ensure leading zero
-        if child_pno and not child_pno.startswith('0') and child_pno[0].isdigit():
-            child_pno = '0' + child_pno
-        # find desc from template BOM rows
-        trow_c = tpl_bom_rows.get(child_pno, [])
-        child_desc = trow_c[2] if len(trow_c) > 2 and trow_c[2] else child_part.get('desc', '')
-
-        sv(ws, r, 1, '1')
-        sv(ws, r, 2, child_pno)
-        if child_desc:
-            sv(ws, r, 3, child_desc)
-
-    # FIX: RM Grade (col E) — from PDF material text if template has none
-    rm_grade_val = ''
-    if child_part:
-        rm_grade_val = child_part.get('material', '') or stamp.get('rm_grade', '')
-    if not rm_grade_val:
-        rm_grade_val = stamp.get('rm_grade', '')
-    if rm_grade_val:
-        # Normalise G000169 → G-00-0169 style
-        rm_grade_norm = re.sub(r'G\s*0+(\d{2})(\d{4})', r'G-00-\2', rm_grade_val)
-        rm_grade_norm = re.sub(r'MM\s*(\d+)', r'MM \1', rm_grade_norm).strip()
-        if not ws.cell(r, 5).value:
-            sv(ws, r, 5, rm_grade_norm)
-        flags.append(
-            f"⚠ Inhouse RM — RM Grade (col E): '{rm_grade_norm}' is non-standard. "
-            f"Please verify/select correct grade from dropdown."
-        )
-
-    # FIX: RM Supplier (col G) — from meta supplier name
-    if not ws.cell(r, 7).value and supplier_short:
-        sv(ws, r, 7, supplier_short)
-
-    # FIX: Country (col H) — default India
-    if not ws.cell(r, 8).value:
-        sv(ws, r, 8, 'India')
-
-    # FIX: Parameter (col I) and UOM (col J) — Weight / Kg from Library
-    rm_param_vals = lib.get('AE', [])
-    rm_uom_vals   = lib.get('AF', [])
-    rm_param = find_in_lib(['weight'], rm_param_vals) if rm_param_vals else 'Weight'
-    rm_uom   = find_in_lib(['kg'],    rm_uom_vals)    if rm_uom_vals   else 'Kg'
-    if not ws.cell(r, 9).value and rm_param:
-        sv(ws, r, 9, rm_param)
-    if not ws.cell(r, 10).value and rm_uom:
-        sv(ws, r, 10, rm_uom)
-
-    # Thickness (col 13)
-    rm_thickness = ''
-    if child_part and child_part.get('thickness'):
-        rm_thickness = child_part['thickness']
-    elif stamp.get('blank_thk'):
-        rm_thickness = stamp.get('blank_thk')
-    if rm_thickness:
-        sv(ws, r, 13, rm_thickness)
-
-    # Gross / Net weights + formulas
-    # FIX: prefer template exact net weight over PDF-rounded value when template has it
+    # Gross weight (col 16) — from PDF
     raw_g = stamp.get('input_wt', '')
+    if raw_g:
+        try:    sv(ws_rm, 3, 16, float(raw_g))
+        except: sv(ws_rm, 3, 16, raw_g)
+
+    # Net weight (col 18) — from PDF; use more precise template value if PDF is rounded
     raw_n = stamp.get('output_wt', '')
-    tpl_gross = tpl_rm3[15] if len(tpl_rm3) > 15 else None
-    tpl_net   = tpl_rm3[17] if len(tpl_rm3) > 17 else None
-    try:    sv(ws, r, 16, float(raw_g) if raw_g else tpl_gross)
-    except: sv(ws, r, 16, raw_g or tpl_gross)
-    # Use template net if it's more precise than PDF (PDF often rounds to 3dp)
+    tpl_net = tpl_rm3[17] if len(tpl_rm3) > 17 else None
     try:
-        pdf_net = float(raw_n) if raw_n else None
+        pdf_net_f = float(raw_n) if raw_n else None
         tpl_net_f = float(tpl_net) if tpl_net is not None else None
-        if tpl_net_f is not None and pdf_net is not None:
-            # Use template if it differs from PDF only by rounding
-            if abs(round(tpl_net_f, 3) - round(pdf_net, 3)) < 0.001:
-                sv(ws, r, 18, tpl_net_f)
+        if tpl_net_f is not None and pdf_net_f is not None:
+            # If template value rounds to same as PDF, use the more precise template value
+            if abs(round(tpl_net_f, 3) - round(pdf_net_f, 3)) < 0.001:
+                sv(ws_rm, 3, 18, tpl_net_f)
             else:
-                sv(ws, r, 18, pdf_net)
-        elif tpl_net_f is not None:
-            sv(ws, r, 18, tpl_net_f)
-        else:
-            sv(ws, r, 18, pdf_net or tpl_net)
+                sv(ws_rm, 3, 18, pdf_net_f)
+        elif pdf_net_f is not None:
+            sv(ws_rm, 3, 18, pdf_net_f)
     except:
-        sv(ws, r, 18, raw_n or tpl_net)
-    ws.cell(row=r, column=17, value='=P3-R3')
-    ws.cell(row=r, column=19, value='=R3/P3*100')
+        if raw_n: sv(ws_rm, 3, 18, raw_n)
 
-    # ── Inhouse Process ───────────────────────────────────────────────────
-    ws = wb['Inhouse Process']
+    # Scrap and Yield — always formulas referencing gross/net
+    ws_rm.cell(row=3, column=17, value='=P3-R3')
+    ws_rm.cell(row=3, column=19, value='=R3/P3*100')
 
-    assy_pno = assy_desc = child_pno = child_desc = ''
-    for rn, v in sorted(tpl_proc.items()):
-        if v['level'] == '0' and v['pno'] and not assy_pno:
-            assy_pno = v['pno']; assy_desc = v['desc']
-        if v['level'] == '1' and v['pno'] and not child_pno:
-            child_pno = v['pno']; child_desc = v['desc']
+    # Flag if PDF RM grade differs from template (template grade is the correct standard value)
+    tpl_grade = str(tpl_rm3[4]).strip() if len(tpl_rm3) > 4 and tpl_rm3[4] else ''
+    pdf_grade = stamp.get('rm_grade', '')
+    if pdf_grade and tpl_grade:
+        # Normalise both for comparison
+        def norm_grade(g):
+            return re.sub(r'[\s\-]', '', g).upper()
+        if norm_grade(pdf_grade) not in norm_grade(tpl_grade):
+            flags.append(
+                f"⚠ Inhouse RM — RM Grade mismatch: PDF says '{pdf_grade}', "
+                f"template has '{tpl_grade}'. Verify correct grade."
+            )
 
-    child_start = min((rn for rn, v in tpl_proc.items() if v['level'] == '1'), default=6)
+    # ── Inhouse Process ───────────────────────────────────────────────────────
+    # For Excel source: rows already fully populated — copy verbatim
+    ws_proc = wb['Inhouse Process']
 
-    if not assy_pno and tpl_row_order:
-        first_pno = tpl_row_order[0]
-        trow0 = tpl_bom_rows.get(first_pno, [])
-        assy_pno  = trow0[1] if len(trow0) > 1 else first_pno
-        assy_desc = trow0[2] if len(trow0) > 2 else ''
-    if not child_pno:
-        for p in bom:
-            tp = str(p.get('type_part', '')).upper()
-            if tp not in ('BOU', 'BOP') and p.get('sno', '') != '1':
-                raw = str(p['part_no']).strip()
-                child_pno = ('0' + raw) if (raw and not raw.startswith('0') and raw[0].isdigit()) else raw
-                tpl_row_c = tpl_bom_rows.get(child_pno, [])
-                child_desc = (tpl_row_c[2] if len(tpl_row_c) > 2 and tpl_row_c[2] else p.get('desc', ''))
-                break
-
-    # For Excel source: preserve source rows directly
     if source == 'excel' and process_rows:
         for idx, prow in enumerate(process_rows, start=3):
-            sv(ws, idx, 1, prow.get('level'))
-            sv(ws, idx, 2, prow.get('part_no'))
-            sv(ws, idx, 3, prow.get('desc'))
-            sv(ws, idx, 4, prow.get('mfg'))
-            sv(ws, idx, 5, prow.get('sub_op'))
-            sv(ws, idx, 6, prow.get('sub_op_name'))
-            sv(ws, idx, 7, prow.get('op_no'))
-            sv(ws, idx, 8, prow.get('ftg'))
-            sv(ws, idx, 9, prow.get('ftg_name'))
-            sv(ws, idx, 10, prow.get('ftg_qty'))
-            sv(ws, idx, 11, prow.get('mach_make'))
-            sv(ws, idx, 12, prow.get('mach_spec'))
-            sv(ws, idx, 13, prow.get('p1_type'))
-            sv(ws, idx, 14, prow.get('p1_uom'))
-            sv(ws, idx, 15, prow.get('p1_val'))
-            sv(ws, idx, 16, prow.get('p2_type'))
-            sv(ws, idx, 17, prow.get('p2_uom'))
-            sv(ws, idx, 18, prow.get('p2_val'))
-            sv(ws, idx, 19, prow.get('remarks'))
+            sv(ws_proc, idx, 1,  prow.get('level'))
+            sv(ws_proc, idx, 2,  prow.get('part_no'))
+            sv(ws_proc, idx, 3,  prow.get('desc'))
+            sv(ws_proc, idx, 4,  prow.get('mfg'))
+            sv(ws_proc, idx, 5,  prow.get('sub_op'))
+            sv(ws_proc, idx, 6,  prow.get('sub_op_name'))
+            sv(ws_proc, idx, 7,  prow.get('op_no'))
+            sv(ws_proc, idx, 8,  prow.get('ftg'))
+            sv(ws_proc, idx, 9,  prow.get('ftg_name'))
+            sv(ws_proc, idx, 10, prow.get('ftg_qty'))
+            sv(ws_proc, idx, 11, prow.get('mach_make'))
+            sv(ws_proc, idx, 12, prow.get('mach_spec'))
+            sv(ws_proc, idx, 13, prow.get('p1_type'))
+            sv(ws_proc, idx, 14, prow.get('p1_uom'))
+            sv(ws_proc, idx, 15, prow.get('p1_val'))
+            sv(ws_proc, idx, 16, prow.get('p2_type'))
+            sv(ws_proc, idx, 17, prow.get('p2_uom'))
+            sv(ws_proc, idx, 18, prow.get('p2_val'))
+            sv(ws_proc, idx, 19, prow.get('remarks'))
         wb.save(str(out_path))
         return flags
 
-    # For PDF source: ops only have raw_name, need categorisation
-    # ── Categorise tool ops into canonical slots ─────────────────────────────
-    # First-match-wins per slot so RH duplicates (which carry full tonnage/press data)
-    # are used and LH duplicates (later in list, often missing data) are ignored.
-    cats = {k: None for k in ['BLANK_PIERCE','FORM_1','FORM_2','PIERCE_1','PIERCE_2','INSPECT']}
+    # For PDF source: template already has the correct process row structure.
+    # We only need to overlay per-row dynamic values from PDF tool_ops:
+    #   col  9  FTG Name    — derived from PDF raw op name
+    #   col 12  Machine Spec (press type) — from PDF
+    #   col 15  P1 Value (parts/stroke)   — from PDF
+    #   col 18  P2 Value (tonnage)        — from PDF
+    #   col 19  Remarks (construct)       — from PDF
+
+    # ── Categorise PDF tool ops into named slots ──────────────────────────────
+    # Match each PDF op to a canonical slot by keyword scanning.
+    # First-match-wins so the RH part ops (which carry full data) take precedence
+    # over the LH duplicates that follow.
+    cats = {k: None for k in ['BLANK','FORM_1','FORM_2','PIERCE_1','PIERCE_2','INSPECT']}
     for op in tool_ops:
-        u = (op.get('_ftg_name') or op.get('raw_name') or '').upper()
+        u = (op.get('raw_name') or '').upper()
         is_blank   = 'BLANK' in u and 'FINE' not in u and 'PROFILE' not in u
-        is_punch   = 'PIERC' in u or 'PUNCH' in u
         is_1st     = '1ST' in u or 'FIRST' in u
         is_2nd     = '2ND' in u or 'SECOND' in u
+        is_punch   = 'PIERC' in u or 'PUNCH' in u
         is_inspect = 'INSPECT' in u or 'PANEL' in u or 'CHECK' in u
 
-        if is_blank and cats['BLANK_PIERCE'] is None:
-            # BLANKING TOOL (with or without PIERC/PUNCH in name) → BLANK_PIERCE
-            cats['BLANK_PIERCE'] = op
-        elif is_1st and 'FORM' in u and cats['FORM_1'] is None:
-            cats['FORM_1'] = op
-        elif is_2nd and 'FORM' in u and cats['FORM_2'] is None:
-            cats['FORM_2'] = op
-        elif 'CAM' in u and 'PIERC' in u and cats['PIERCE_1'] is None:
-            cats['PIERCE_1'] = op
-        elif is_1st and is_punch and cats['PIERCE_1'] is None:
-            cats['PIERCE_1'] = op
-        elif is_2nd and is_punch and cats['PIERCE_2'] is None:
-            cats['PIERCE_2'] = op
-        elif 'PIERC' in u and 'CAM' not in u and not is_blank and cats['PIERCE_2'] is None:
-            cats['PIERCE_2'] = op
-        elif is_inspect and cats['INSPECT'] is None:
-            cats['INSPECT'] = op
-        elif 'FORM' in u and not is_blank and cats['FORM_1'] is None:
-            # Plain FORMING TOOL (no ordinal) → FORM_1
-            cats['FORM_1'] = op
+        if   is_blank                              and cats['BLANK']    is None: cats['BLANK']    = op
+        elif is_1st and 'FORM' in u                and cats['FORM_1']   is None: cats['FORM_1']   = op
+        elif is_2nd and 'FORM' in u                and cats['FORM_2']   is None: cats['FORM_2']   = op
+        elif is_1st and is_punch                   and cats['PIERCE_1'] is None: cats['PIERCE_1'] = op
+        elif is_2nd and is_punch                   and cats['PIERCE_2'] is None: cats['PIERCE_2'] = op
+        elif 'CAM' in u and 'PIERC' in u           and cats['PIERCE_1'] is None: cats['PIERCE_1'] = op
+        elif 'PIERC' in u and not is_blank         and cats['PIERCE_2'] is None: cats['PIERCE_2'] = op
+        elif is_inspect                            and cats['INSPECT']  is None: cats['INSPECT']  = op
+        elif 'FORM' in u and not is_blank          and cats['FORM_1']   is None: cats['FORM_1']   = op
 
-    # Only emit rows for populated slots (skip empty FORM_2 when PDF has a single forming op)
-    ordered_cats = ['BLANK_PIERCE','FORM_1','FORM_2','PIERCE_1','PIERCE_2','INSPECT']
-
-    # Map each cat to the PROC_RULES keywords for Library lookup
-    cat_pdf_kws = {
-        'BLANK_PIERCE': ['BLANK','PIERC'],   # → 'Blank & Pierce'
-        'FORM_1':       ['FORM'],             # → 'Forming' (bare, Library W220)
-        'FORM_2':       ['2ND','FORM'],       # → 'Forming 2'
-        'PIERCE_1':     ['1ST','PUNCH'],      # → 'Piercing 1'
-        'PIERCE_2':     ['2ND','PUNCH'],      # → 'Piercing 2'
-        'INSPECT':      ['INSPECT'],          # → 'Inspection '
+    # Map template process sub-op keyword → cat slot
+    # These keywords are matched against the template's Sub Operation (col 5) values
+    SUB_TO_CAT = {
+        'blank':      'BLANK',
+        'forming':    'FORM_1',
+        'forming 1':  'FORM_1',
+        'forming 2':  'FORM_2',
+        'piercing 1': 'PIERCE_1',
+        'piercing 2': 'PIERCE_2',
+        'inspection': 'INSPECT',
     }
 
-    # ── Library lookups for assembly rows ────────────────────────────────────
-    assy_ftg_fix  = find_in_lib(['fixture','m&m'],  lib.get('X', []))
-    assy_ftg_gau  = find_in_lib(['gauge', 'm&m'],   lib.get('X', []))
-    assy_p1t_str  = find_in_lib(['strokes'],        lib.get('Y', []))
-    assy_p1t_pcs  = find_in_lib(['pieces'],         lib.get('Y', []))
-    assy_p1u_nos  = find_in_lib(['nos'],            lib.get('Z', []))
-    assy_mfg_oth  = find_in_lib(['others'],         lib.get('V', []))
+    # Walk every process row in template (rows 3 onward) and overlay PDF values
+    for r in range(3, ws_proc.max_row + 1):
+        sub_op = str(ws_proc.cell(r, 5).value or '').strip().lower()
+        if not sub_op:
+            continue
 
-    # ── Assembly-level rows (rows 3–4): Riveting + Assy Inspection ───────────
-    # Row 3: level/pno/desc written (first assy op establishes identity).
-    # Row 4: level/pno/desc left blank (ref leaves them empty on continuation rows).
-    assy_rows = [
-        # (row, write_id, mfg, sub_kw, ftg, ftg_name, sub_op_name, p1t, p1v, mach_make, mach_spec)
-        (3, True,  assy_mfg_oth, 'RIVET',   assy_ftg_fix, 'Orbital Riveting Fixture RH',
-         'Orbital Rivetting', assy_p1t_str, 1, 'Orbital Rivetting Fixture', 'Mechanical'),
-        (4, False, assy_mfg_oth, 'INSPECT', assy_ftg_gau, 'Assy checking fixture RH',
-         'Assy inspection',   assy_p1t_pcs, 1, '', ''),
-    ]
-    for (row_r, write_id, mfg_v, sub_kw, ftg_v, ftg_nm, sub_nm, p1t_v, p1_val, mach_mk, mach_sp) in assy_rows:
-        _, sub_v, _, _, _, _, _ = match_rule(sub_kw, lib)
-        if write_id:
-            sv(ws, row_r, 1, '0')
-            sv(ws, row_r, 2, assy_pno)
-            sv(ws, row_r, 3, assy_desc)
-        sv(ws, row_r, 4, mfg_v);  sv(ws, row_r, 5, sub_v)
-        if sub_nm: sv(ws, row_r, 6, sub_nm)
-        sv(ws, row_r, 7, (row_r - 2) * 10)
-        sv(ws, row_r, 8, ftg_v);  sv(ws, row_r, 9, ftg_nm);  sv(ws, row_r, 10, 1)
-        if mach_mk: sv(ws, row_r, 11, mach_mk)
-        if mach_sp: sv(ws, row_r, 12, mach_sp)
-        sv(ws, row_r, 13, p1t_v); sv(ws, row_r, 14, assy_p1u_nos); sv(ws, row_r, 15, p1_val)
+        # Find matching cat for this sub-op
+        cat_key = None
+        for kw, ck in SUB_TO_CAT.items():
+            if sub_op.startswith(kw):
+                cat_key = ck
+                break
+        if cat_key is None:
+            continue
 
-    cur = child_start
-
-    # ── Shearing row ─────────────────────────────────────────────────────────
-    # This is the FIRST child-level row — it owns level='1', child pno, child desc.
-    # Ref has no FTG for shearing (col 8 blank). Machine make/spec from PDF.
-    shear_mfg, shear_sub, _, shear_p1t, shear_p1u, _, _ = match_rule('SHEAR', lib)
-    gross_val = stamp.get('input_wt', '')
-    try:    gross = float(gross_val) if gross_val else ''
-    except: gross = gross_val
-
-    sv(ws, cur, 1, '1');         sv(ws, cur, 2, child_pno);   sv(ws, cur, 3, child_desc)
-    sv(ws, cur, 4, shear_mfg);   sv(ws, cur, 5, shear_sub);   sv(ws, cur, 7, 10)
-    # col 8 (FTG) intentionally left blank for shearing — matches reference
-    sv(ws, cur, 11, 'Shearing Machine'); sv(ws, cur, 12, 'Hydraulic')
-    sv(ws, cur, 13, shear_p1t);  sv(ws, cur, 14, shear_p1u);  sv(ws, cur, 15, gross)
-    cur += 1
-
-    # ── Stamping ops (Blank, Forming, Piercing 1, Piercing 2, Inspection) ───
-    # All stamping rows have no identity cols (level/pno/desc blank) since shearing
-    # already established them on the row above.
-    # Op numbers: 20, 30, 40, 50, 60 (shearing already used 10).
-    op_seq = 2  # first stamping op_number = op_seq * 10 = 20
-    for cat_key in ordered_cats:
         op = cats.get(cat_key)
         if op is None:
-            continue  # skip empty slots (e.g. FORM_2 when PDF has single forming op)
+            continue
 
-        pdf_kws = '|'.join(cat_pdf_kws[cat_key])
-        mfg, sub, ftg, p1t, p1u, p2t, p2u = match_rule(pdf_kws, lib)
+        # FTG Name (col 9) — normalise from PDF raw name
+        ftg_name = normalise_ftg_name(op.get('raw_name', ''))
+        if ftg_name:
+            sv(ws_proc, r, 9, ftg_name)
 
-        # FTG Name from raw PDF name
-        if op.get('_ftg_name'):
-            ftg_name = op['_ftg_name']
-        elif op.get('raw_name'):
-            ftg_name = normalise_ftg_name(op['raw_name'])
-        else:
-            ftg_name = ''
-
-        # parts_per from PDF (not hardcoded)
-        parts_per_raw = op.get('parts_per', '')
-        try:
-            parts_per = int(parts_per_raw) if parts_per_raw and str(parts_per_raw).strip() else 1
-        except (ValueError, TypeError):
-            parts_per = 1
-
-        tonnage    = op.get('tonnage', '')
-        construct  = op.get('construct', '')
-        if construct and construct == construct.upper():
-            construct = title_case(construct)
-        # FIX: 'Ciba' is the FTG material/maker — not a TSO remark.
-        # Only write construct to col 19 when it is a fabrication method (e.g. 'Fabricated').
-        # Panel checker rows have construct='Ciba' from PDF; suppress it.
-        FAB_KEYWORDS = ('fabricat', 'cast', 'weld', 'machined', 'forged')
-        if construct and not any(k in construct.lower() for k in FAB_KEYWORDS):
-            construct = ''
-        p2v = tonnage if p2t else ''
-
-        # Press type from PDF ('MECHANICAL' → 'Mechanical')
+        # Machine Spec / press type (col 12) — from PDF
         press_type = op.get('press', '')
-        if press_type and press_type == press_type.upper():
-            press_type = title_case(press_type)
+        if press_type:
+            sv(ws_proc, r, 12, title_case(press_type) if press_type == press_type.upper() else press_type)
 
-        # Identity cols: all blank — shearing row already wrote level/pno/desc
-        sv(ws, cur, 4, mfg);  sv(ws, cur, 5, sub);  sv(ws, cur, 7, op_seq * 10)
-        sv(ws, cur, 8, ftg);  sv(ws, cur, 9, ftg_name);  sv(ws, cur, 10, 1 if ftg_name else '')
-        if mfg and 'sheet metal' in mfg.lower():
-            sv(ws, cur, 11, 'Igsec')
-            sv(ws, cur, 12, press_type if press_type else 'Mechanical')
-        sv(ws, cur, 13, p1t);  sv(ws, cur, 14, p1u)
-        sv(ws, cur, 15, parts_per if p1t else '')
-        sv(ws, cur, 16, p2t);  sv(ws, cur, 17, p2u);  sv(ws, cur, 18, p2v)
-        sv(ws, cur, 19, construct)
-        cur    += 1
-        op_seq += 1
+        # P1 Value / parts per stroke (col 15) — from PDF
+        parts_per_raw = op.get('parts_per', '')
+        if parts_per_raw:
+            try:    sv(ws_proc, r, 15, int(parts_per_raw))
+            except: sv(ws_proc, r, 15, parts_per_raw)
+
+        # P2 Value / tonnage (col 18) — from PDF
+        tonnage = op.get('tonnage', '')
+        if tonnage:
+            sv(ws_proc, r, 18, tonnage)
+
+        # Remarks / construct (col 19) — only fabrication-method keywords, not material names
+        construct = op.get('construct', '')
+        if construct:
+            c_tc = title_case(construct) if construct == construct.upper() else construct
+            FAB_KW = ('fabricat', 'cast', 'weld', 'machined', 'forged')
+            if any(k in c_tc.lower() for k in FAB_KW):
+                sv(ws_proc, r, 19, c_tc)
+
+        # Gross weight for shearing row (col 15 when sub_op is 'shearing')
+        if sub_op.startswith('shear'):
+            gross_val = stamp.get('input_wt', '')
+            if gross_val:
+                try:    sv(ws_proc, r, 15, float(gross_val))
+                except: sv(ws_proc, r, 15, gross_val)
 
     wb.save(str(out_path))
     return flags
