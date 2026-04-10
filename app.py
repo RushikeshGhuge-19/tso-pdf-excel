@@ -13,7 +13,7 @@ Usage (CLI):
 Requirements: pip install pdfplumber openpyxl streamlit
 """
 
-import sys, re, shutil, io
+import sys, re, shutil, io, copy
 from pathlib import Path
 from difflib import SequenceMatcher
 
@@ -70,8 +70,6 @@ def find_sub_op(search_terms, lib_vals, pdf_keywords=None):
     base = find_in_lib(search_terms, lib_vals)
     if base is None:
         return None
-    # Activate plain-start preference whenever the op is a piercing/punching type
-    # (whether PDF labels it PIERC or PUNCH — both map to 'Piercing N' in Library)
     is_pierc_type = pdf_keywords and (
         'PIERC' in pdf_keywords or 'PUNCH' in pdf_keywords
     ) and 'BLANK' not in pdf_keywords
@@ -79,7 +77,6 @@ def find_sub_op(search_terms, lib_vals, pdf_keywords=None):
         kws = pdf_keywords if not isinstance(pdf_keywords, list) else '|'.join(pdf_keywords)
         matches = [v for v in lib_vals if all(t in v.lower() for t in
                    [s.lower() for s in search_terms])]
-        # Prefer values starting with 'piercing' (not 'cam piercing' etc.)
         plain = [m for m in matches if m.lower().startswith('piercing')]
         return plain[0] if plain else base
     return base
@@ -88,13 +85,7 @@ def find_sub_op(search_terms, lib_vals, pdf_keywords=None):
 # ─────────────────────────────────────────────────────────────────────────────
 # PROCESS RULES  — keyword patterns → Library search terms (never fixed strings)
 # ─────────────────────────────────────────────────────────────────────────────
-#
-# FIX #1: Added 'PUNCH' keywords alongside 'PIERC' so that PDF ops named
-#         '1ST PUNCHING TOOL' / '2ND PUNCHING TOOL' are correctly matched.
-#         PDF uses 'PUNCHING' not 'PIERCING' for these operations.
-#
 PROC_RULES = [
-    # FIX: Blank & Pierce — use ['blank','pierce'] which matches Library 'Blank & Pierce'
     (['BLANK','PIERC'],  ['blank','pierce'],        ['sheet metal','cold'], ['tool','m&m'],
      ['parts/stroke'],   ['nos'],                  ['tonnage'],            ['others']),
     (['1ST','FORM'],     ['forming','1'],           ['sheet metal','cold'], ['tool','m&m'],
@@ -105,12 +96,10 @@ PROC_RULES = [
      ['parts/stroke'],   ['nos'],                  ['tonnage'],            ['others']),
     (['SECOND','FORM'],  ['forming','2'],           ['sheet metal','cold'], ['tool','m&m'],
      ['parts/stroke'],   ['nos'],                  ['tonnage'],            ['others']),
-    # Forming without ordinal (plain FORMING TOOL) → Forming (bare, no suffix)
     (['FORM'],           ['forming'],               ['sheet metal','cold'], ['tool','m&m'],
      ['parts/stroke'],   ['nos'],                  ['tonnage'],            ['others']),
     (['CAM','PIERC'],    ['piercing','1'],          ['sheet metal','cold'], ['tool','m&m'],
      ['parts/stroke'],   ['nos'],                  ['tonnage'],            ['others']),
-    # FIX: PUNCHING → Piercing ops in Library (PDF uses PUNCHING not PIERCING)
     (['1ST','PUNCH'],    ['piercing','1'],          ['sheet metal','cold'], ['tool','m&m'],
      ['parts/stroke'],   ['nos'],                  ['tonnage'],            ['others']),
     (['FIRST','PUNCH'],  ['piercing','1'],          ['sheet metal','cold'], ['tool','m&m'],
@@ -129,7 +118,6 @@ PROC_RULES = [
      ['parts/stroke'],   ['nos'],                  [],                     []),
     (['PROJECT','WELD'], ['projection','welding'],  ['others'],             ['tool','supplier'],
      ['parts/stroke'],   ['nos'],                  [],                     []),
-    # FIX: RIVET → Riveting sub-op
     (['RIVET'],          ['riveting'],              ['others'],             ['fixture','m&m'],
      ['parts/stroke'],   ['nos'],                  [],                     []),
 ]
@@ -187,19 +175,15 @@ def normalise_ftg_name(raw):
     if not raw:
         return ''
     u = raw.upper().strip()
-    # OCR corruption: INSPECTION PANEL CHECKER RH/LH → 'Panel checker RH/LH'
     if 'INSPECT' in u or 'PANEL' in u or 'CHECK' in u:
         side = ''
         if u.endswith('RH') or ' RH' in u: side = ' RH'
         elif u.endswith('LH') or ' LH' in u: side = ' LH'
         return f'Panel checker{side}'
     tc = title_case(raw)
-    # 'Form Tool' → 'Forming Tool'
     tc = re.sub(r'\bForm Tool\b', 'Forming Tool', tc)
-    # '1st Punching Lh+ Rh Tool' → '1st Piercing Tool'
     tc = re.sub(r'\b1st Punching.*Tool\b', '1st Piercing Tool', tc, flags=re.IGNORECASE)
     tc = re.sub(r'\b2nd Punching.*Tool\b', '2nd Piercing Tool', tc, flags=re.IGNORECASE)
-    # Bare 'Piercing' → 'Piercing Tool'
     if tc.strip().lower() == 'piercing':
         return 'Piercing Tool'
     return tc
@@ -248,6 +232,29 @@ def read_template_proc_structure(wb):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# DATA VALIDATION COPIER — preserves dropdown accessibility from template
+# ─────────────────────────────────────────────────────────────────────────────
+def copy_data_validations(src_wb, dst_wb):
+    """
+    Copy all data validation rules (dropdown lists) from every sheet in src_wb
+    to the matching sheet in dst_wb.  openpyxl loses these when it re-saves a
+    workbook that was opened after shutil.copy2, so we must re-apply them.
+    """
+    for sheet_name in src_wb.sheetnames:
+        if sheet_name not in dst_wb.sheetnames:
+            continue
+        src_ws = src_wb[sheet_name]
+        dst_ws = dst_wb[sheet_name]
+
+        # Remove any existing (possibly broken) validations on the destination
+        dst_ws.data_validations.dataValidation = []
+
+        for dv in src_ws.data_validations.dataValidation:
+            new_dv = copy.copy(dv)
+            dst_ws.add_data_validation(new_dv)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # PDF PARSER  — extracts data from a TSO PDF (4-page format)
 # ─────────────────────────────────────────────────────────────────────────────
 def parse_pdf(pdf_path):
@@ -284,7 +291,6 @@ def parse_pdf(pdf_path):
                 for row in tbls[0][1:]:
                     rc = [cl(c) for c in row]
                     if not rc[0]: continue
-                    # Surface treatment is col 13 (index 13) in the PDF table
                     surface_treatment = rc[13] if len(rc) > 13 else ''
                     data['bom'].append({
                         'sno':               rc[0],
@@ -295,7 +301,6 @@ def parse_pdf(pdf_path):
                         'thickness':         rc[9]  if len(rc) > 9  else '',
                         'qty_assy':          rc[10] if len(rc) > 10 else '',
                         'qty_veh':           rc[11] if len(rc) > 11 else '',
-                        # FIX: capture surface treatment from PDF for col N
                         'surface_treatment': 'Yes' if surface_treatment and surface_treatment not in ('', '---') else 'No',
                     })
 
@@ -314,16 +319,13 @@ def parse_pdf(pdf_path):
                         'output_wt':  rc[33] if len(rc) > 33 else '',
                         'blank_thk':  rc[17] if len(rc) > 17 else '',
                         'rm_grade':   rc[10] if len(rc) > 10 else '',
-                        'sheet_l':    rc[24] if len(rc) > 24 else '',  # total sheet L mm
+                        'sheet_l':    rc[24] if len(rc) > 24 else '',
                         'sheet_w':    rc[23] if len(rc) > 23 else '',
                         'rm_supplier': rc[36] if len(rc) > 36 else '',
                     }
                     break
             if main_idx is None: return data
 
-            # FIX: corrected column mapping.
-            # Layout: [40]=name_part1, [41]=name_part2, [42]=L, [43]=W, [44]=H,
-            #         [45]=tonnage, [46]=press_type, [47]=parts_per, [48]=construct
             def extract_op(rc, n1, n2, lc):
                 if len(rc) <= lc + 6: return None
                 p1 = rc[n1] if n1 < len(rc) else ''
@@ -340,7 +342,6 @@ def parse_pdf(pdf_path):
                     'tool_w':    rc[lc+1] if len(rc) > lc+1 else '',
                     'tool_h':    rc[lc+2] if len(rc) > lc+2 else '',
                     'tonnage':   rc[lc+3] if len(rc) > lc+3 else '',
-                    # FIX: press_type is at lc+4, parts_per at lc+5, construct at lc+6
                     'press':     rc[lc+4] if len(rc) > lc+4 else '',
                     'parts_per': rc[lc+5] if len(rc) > lc+5 else '',
                     'construct': rc[lc+6] if len(rc) > lc+6 else '',
@@ -354,16 +355,15 @@ def parse_pdf(pdf_path):
                 op = extract_op(rc, 40, 41, 42)
                 if op: data['tool_ops'].append(op)
 
-        # Page 4: assembly ops — extract FTG names, sub-op names, side (RH/LH)
+        # Page 4: assembly ops
         if len(pdf.pages) >= 4:
             tbls = pdf.pages[3].extract_tables()
             if tbls:
                 tbl4 = tbls[0]
-                current_side = ''  # RH or LH from data row part name
+                current_side = ''
                 for row in tbl4:
                     rc = [str(c).strip() if c else '' for c in row]
                     if not any(v for v in rc): continue
-                    # Data rows carry part name at col[3] with side info
                     if rc[0] in ('1','2') and len(rc) > 3 and rc[3]:
                         pup = rc[3].upper()
                         if ' RH' in pup or pup.endswith('RH'): current_side = 'RH'
@@ -373,8 +373,6 @@ def parse_pdf(pdf_path):
                     if not ftg_raw or ftg_raw in ('---', 'FTG Description'):
                         continue
                     ftg_up = ftg_raw.upper()
-                    # Orbital riveting: OCR scrambles 'ORBITAL RIVETING FIXTURE'
-                    # e.g. 'ORBITFAIXLT RUIRVEETING' — detect by ORBIT alone (unique enough)
                     is_orbital = 'ORBIT' in ftg_up
                     is_assy    = (not is_orbital) and any(
                         k in ftg_up for k in ['CHECK','ASSY','INSPECT','FIXTURE'])
@@ -402,11 +400,6 @@ def parse_pdf(pdf_path):
 # EXCEL PARSER  — extracts data from a filled TSO Excel workbook
 # ─────────────────────────────────────────────────────────────────────────────
 def parse_excel(excel_path):
-    """
-    Read data from a filled TSO Excel (same 19-sheet format).
-    Extracts BOM, Inhouse RM, and Inhouse Process data.
-    Returns the same data dict structure as parse_pdf().
-    """
     data = {
         'meta': {},
         'bom': [],
@@ -419,7 +412,6 @@ def parse_excel(excel_path):
 
     wb = load_workbook(str(excel_path), data_only=True)
 
-    # ── Meta: try TSO Summary sheet first, else infer from BOM ──────────────
     if 'TSO Summary' in wb.sheetnames:
         ws = wb['TSO Summary']
         for row in ws.iter_rows(min_row=2, values_only=True):
@@ -433,7 +425,6 @@ def parse_excel(excel_path):
             elif 'welding' in key:                  data['meta']['welding_loc'] = val
             elif 'end items' in key:                data['meta']['end_items'] = val
 
-    # ── BOM Template ──────────────────────────────────────────────────────
     if 'BOM Template' in wb.sheetnames:
         ws = wb['BOM Template']
         for r in range(3, ws.max_row + 1):
@@ -455,7 +446,6 @@ def parse_excel(excel_path):
                 '_level':            level,
             })
 
-    # ── Inhouse RM ────────────────────────────────────────────────────────
     if 'Inhouse RM' in wb.sheetnames:
         ws = wb['Inhouse RM']
         if ws.max_row >= 3:
@@ -474,7 +464,6 @@ def parse_excel(excel_path):
                         p['thickness'] = cl(r3[12]) if len(r3) > 12 else ''
                         break
 
-    # ── Inhouse Process ────────────────────────────────────────────────────
     if 'Inhouse Process' in wb.sheetnames:
         ws = wb['Inhouse Process']
         for r in range(3, ws.max_row + 1):
@@ -543,18 +532,17 @@ def parse_input(input_path):
 # ─────────────────────────────────────────────────────────────────────────────
 # EXCEL WRITER
 # ─────────────────────────────────────────────────────────────────────────────
-def write_excel(data, template_path, out_path):
-    """
-    The blank M&M TSO template has:
-      BOM:     rows pre-populated with level/pno/desc/qty,
-               but cols D-N mostly blank — fill from PDF + Library + meta
-      Inhouse RM: R3 has only thickness/gross/net — fill rest from PDF + Library
-      Inhouse Process: completely blank — build every row from PDF + Library
 
-    All values come from PDF extraction or Library lookups. Nothing hardcoded.
-    """
+# Machine Make hardcoded value for all stamping ops (Blanking, Forming, Piercing)
+MACHINE_MAKE_STAMPING = 'IGSEC'
+
+def write_excel(data, template_path, out_path):
     flags = []
     shutil.copy2(str(template_path), str(out_path))
+
+    # Load template separately (read-only) so we can copy its data validations later
+    template_wb = load_workbook(str(template_path))
+
     wb = load_workbook(str(out_path))
     lib = load_library(wb)
 
@@ -565,53 +553,43 @@ def write_excel(data, template_path, out_path):
     process_rows = data.get('process_rows', [])
     source       = data.get('source', 'pdf')
 
-    # ── Supplier short name from PDF meta ─────────────────────────────────
     supplier_full = meta.get('supplier', '')
     supplier_short = re.sub(
         r'\s+(PVT\.?\s*LTD\.?|LTD\.?|INC\.?|CORP\.?).*$', '',
         supplier_full, flags=re.IGNORECASE
     ).strip()
-    # Title-case only the first word (e.g. 'Slidewell' not 'Slidewell Meilleurtech')
     if supplier_short:
         supplier_short = supplier_short.split()[0].title()
     city = meta.get('stamping_loc', '').strip().title()
 
-    # ── BOM lookup keyed by part number ───────────────────────────────────
     pdf_bom = {}
     for p in bom:
         pdf_bom[str(p['part_no']).strip()] = p
 
-    # ── Library lookups for BOM dropdowns ─────────────────────────────────
-    bom_inhouse_vals  = lib.get('D', [])   # Inhouse/BOP dropdown
-    bom_import_vals   = lib.get('E', [])   # Import/Local
-    bom_country_vals  = lib.get('F', [])   # Country
-    bom_sf_vals       = lib.get('G', [])   # Surface Finish
-    bom_st_vals       = lib.get('H', [])   # Surface Treatment
-    bom_ht_vals       = lib.get('I', [])   # Heat Treatment
+    bom_inhouse_vals  = lib.get('D', [])
+    bom_import_vals   = lib.get('E', [])
+    bom_country_vals  = lib.get('F', [])
+    bom_sf_vals       = lib.get('G', [])
+    bom_st_vals       = lib.get('H', [])
+    bom_ht_vals       = lib.get('I', [])
 
     def bom_yn(val_list, want):
-        """Pick 'Yes' or 'No' from a dropdown list."""
         w = want.lower()
         for v in val_list:
             if v.lower() == w:
                 return v
-        return want  # fallback to raw string
+        return want
 
     # ── BOM Template ──────────────────────────────────────────────────────
     ws_bom = wb['BOM Template']
 
-    # The blank template data starts at R2 (no reference-only row).
-    # The reference format expects data at R3+ (R2 = reference-only message row).
-    # Insert a row at R2 to match reference row numbering, then fill from R3 onward.
     ws_bom.insert_rows(2)
-    # Populate the inserted R2 as the reference-only row (same as filled template convention)
     from openpyxl import load_workbook as _lw
-    _tpl_check = [ws_bom.cell(3, c).value for c in range(1,3)]  # peek at R3 (was R2)
-    if _tpl_check[0] is not None:  # only if data was actually shifted
-        sv(ws_bom, 2, 1, _tpl_check[0])   # copy level
-        sv(ws_bom, 2, 2, _tpl_check[1])   # copy pno
-        sv(ws_bom, 2, 3, ws_bom.cell(3,3).value)  # copy desc
-        # leave rest of R2 blank — it's the reference-only row
+    _tpl_check = [ws_bom.cell(3, c).value for c in range(1,3)]
+    if _tpl_check[0] is not None:
+        sv(ws_bom, 2, 1, _tpl_check[0])
+        sv(ws_bom, 2, 2, _tpl_check[1])
+        sv(ws_bom, 2, 3, ws_bom.cell(3,3).value)
 
     for r in range(3, ws_bom.max_row + 1):
         pno   = str(ws_bom.cell(r, 2).value or '').strip()
@@ -622,15 +600,12 @@ def write_excel(data, template_path, out_path):
         pdf_p = pdf_bom.get(pno, {})
         type_part = str(pdf_p.get('type_part', '')).upper()
 
-        # Col D (4): Carry Over from M&M
         if not ws_bom.cell(r, 4).value:
-            sv(ws_bom, r, 4, bom_yn(lib.get('C',[]), 'No'))  # Carry Over — Library col C
+            sv(ws_bom, r, 4, bom_yn(lib.get('C',[]), 'No'))
 
-        # Col E (5): Serviceable
         if not ws_bom.cell(r, 5).value:
-            sv(ws_bom, r, 5, bom_yn(lib.get('C',[]), 'No'))  # Serviceable — Library col C
+            sv(ws_bom, r, 5, bom_yn(lib.get('C',[]), 'No'))
 
-        # Col F (6): Inhouse / BOP — derived from PDF type_part
         if not ws_bom.cell(r, 6).value:
             if type_part in ('BOU', 'BOP', 'BOP-CONSIGNEE', 'BOP-DIRECTED'):
                 val = find_in_lib(['bop'], bom_inhouse_vals) or 'BOP'
@@ -638,76 +613,61 @@ def write_excel(data, template_path, out_path):
                 val = find_in_lib(['inhouse'], bom_inhouse_vals) or 'Inhouse'
             sv(ws_bom, r, 6, val)
 
-        # Col G (7): Tier 1 Supplier Name — from PDF meta
         if not ws_bom.cell(r, 7).value and supplier_short:
             sv(ws_bom, r, 7, supplier_short)
 
-        # Col H (8): Import / Local — from Library; India → Local
         if not ws_bom.cell(r, 8).value:
             val = find_in_lib(['local'], bom_import_vals)
             sv(ws_bom, r, 8, val)
 
-        # Col I (9): City — from PDF meta stamping_loc
         if not ws_bom.cell(r, 9).value and city:
             sv(ws_bom, r, 9, city)
 
-        # Col J (10): Country — from Library
         if not ws_bom.cell(r, 10).value:
             val = find_in_lib(['india'], bom_country_vals)
             sv(ws_bom, r, 10, val)
 
-        # Col L (12): CAD Weight — from PDF if template has none
         if not ws_bom.cell(r, 12).value and pdf_p.get('cad_wt'):
             try:    sv(ws_bom, r, 12, float(pdf_p['cad_wt']))
             except: sv(ws_bom, r, 12, pdf_p['cad_wt'])
 
-        # Col M (13): Surface Finish Applicability
         if not ws_bom.cell(r, 13).value:
             sv(ws_bom, r, 13, bom_yn(bom_sf_vals, 'No'))
 
-        # Col N (14): Surface Treatment Applicability — from PDF BOM
         if not ws_bom.cell(r, 14).value:
             st_val = pdf_p.get('surface_treatment', 'No')
             sv(ws_bom, r, 14, bom_yn(bom_st_vals, st_val))
 
-        # Col O (15): Heat Treatment Applicability
         if not ws_bom.cell(r, 15).value:
             sv(ws_bom, r, 15, bom_yn(bom_ht_vals, 'No'))
 
     # ── Inhouse RM ────────────────────────────────────────────────────────
     ws_rm = wb['Inhouse RM']
 
-    # Find child part (first Inhouse stamped child, not BOU/BOP)
     child_part = None
     for p in bom:
         sno = str(p.get('sno', '')).strip()
         tp  = str(p.get('type_part', '')).upper()
-        # child is level 1.x, not BOU/BOP, not the assembly row
         if '.' in sno and tp not in ('BOU', 'BOP'):
             child_part = p
             break
     if child_part is None:
         child_part = next((p for p in bom if '.' in str(p.get('sno',''))), None)
 
-    # Library lookups for RM sheet
-    rm_grade_vals   = lib.get('AC', [])  # Inhouse RM Grade dropdown
-    rm_country_vals = lib.get('AD', [])  # Country
-    rm_param_vals   = lib.get('AE', [])  # Parameter
-    rm_uom_vals     = lib.get('AF', [])  # UOM
+    rm_grade_vals   = lib.get('AC', [])
+    rm_country_vals = lib.get('AD', [])
+    rm_param_vals   = lib.get('AE', [])
+    rm_uom_vals     = lib.get('AF', [])
 
-    r = 3  # RM data row
+    r = 3
 
-    # Col A (1): Level
     if not ws_rm.cell(r, 1).value:
         sv(ws_rm, r, 1, '1')
 
-    # Col B (2): Part No — from child part
     if not ws_rm.cell(r, 2).value and child_part:
         sv(ws_rm, r, 2, child_part['part_no'])
 
-    # Col C (3): Part Description — from child part
     if not ws_rm.cell(r, 3).value and child_part:
-        # look up desc from BOM sheet if available
         desc = ''
         for bom_r in range(2, ws_bom.max_row + 1):
             if str(ws_bom.cell(bom_r, 2).value or '').strip() == str(child_part['part_no']).strip():
@@ -715,14 +675,11 @@ def write_excel(data, template_path, out_path):
                 break
         sv(ws_rm, r, 3, desc or child_part.get('desc', ''))
 
-    # Col E (5): RM Grade — from PDF material text (with normalisation)
     if not ws_rm.cell(r, 5).value:
         rm_grade_raw = (child_part.get('material', '') if child_part else '') or stamp.get('rm_grade', '')
         if rm_grade_raw:
-            # Try to find closest match in Library first
             grade_match = None
             for g in rm_grade_vals:
-                # Strip spaces/dashes for comparison
                 def ng(s): return re.sub(r'[\s\-]','',s).upper()
                 if ng(rm_grade_raw[:10]) in ng(g):
                     grade_match = g
@@ -730,66 +687,52 @@ def write_excel(data, template_path, out_path):
             if grade_match:
                 sv(ws_rm, r, 5, grade_match)
             else:
-                # Normalise the raw grade text and write to col F (Others)
                 norm = re.sub(r'G\s*0+(\d{2})(\d{4})', r'G-00-\2', rm_grade_raw)
                 norm = re.sub(r'\bMM\s*(\d)', r'MM \1', norm).strip()
-                sv(ws_rm, r, 6, norm)  # col F = "RM Grade in case of Others"
+                sv(ws_rm, r, 6, norm)
                 flags.append(
                     f"⚠ Inhouse RM — RM Grade '{norm}' not found in Library dropdown. "
                     f"Written to col F (Others). Please select correct grade in col E."
                 )
 
-    # Col G (7): RM Supplier — not extractable from PDF (e.g. 'MAL')
-    # Leave blank and flag for manual entry
     if not ws_rm.cell(r, 7).value:
         flags.append('⚠ Inhouse RM — Raw Material Source (col G): Not available in PDF. Please fill manually.')
 
-    # Col H (8): Country
     if not ws_rm.cell(r, 8).value:
         val = find_in_lib(['india'], rm_country_vals)
         sv(ws_rm, r, 8, val)
 
-    # Col I (9): Parameter — Weight
     if not ws_rm.cell(r, 9).value:
         val = find_in_lib(['weight'], rm_param_vals)
         sv(ws_rm, r, 9, val)
 
-    # Col J (10): UOM — Kg
     if not ws_rm.cell(r, 10).value:
         val = find_in_lib(['kg'], rm_uom_vals)
         sv(ws_rm, r, 10, val)
 
-    # Col K (11): Length (m) — from PDF sheet_l (mm → m)
     if not ws_rm.cell(r, 11).value:
         sheet_l = stamp.get('sheet_l', '')
         if sheet_l:
             try:    sv(ws_rm, r, 11, round(float(sheet_l) / 1000, 4))
             except: pass
 
-    # Col L (12): Width (m) — from PDF sheet_w (mm → m)
     if not ws_rm.cell(r, 12).value:
         sheet_w = stamp.get('sheet_w', '')
         if sheet_w:
             try:    sv(ws_rm, r, 12, round(float(sheet_w) / 1000, 4))
             except: pass
 
-    # Col M (13): Thickness (mm) — from PDF blank_thk (already in mm)
     if not ws_rm.cell(r, 13).value:
         blank_thk = stamp.get('blank_thk', '')
         if blank_thk:
             try:    sv(ws_rm, r, 13, float(blank_thk))
             except: sv(ws_rm, r, 13, blank_thk)
 
-    # Col O (15): Density — not in PDF, flag for manual entry
-
-    # Col P (16): Gross weight — from PDF
     raw_g = stamp.get('input_wt', '')
     if raw_g and not ws_rm.cell(r, 16).value:
         try:    sv(ws_rm, r, 16, float(raw_g))
         except: sv(ws_rm, r, 16, raw_g)
 
-    # Col R (18): Net weight — child part CAD weight is most precise source
-    # PDF output_wt is rounded (e.g. 0.049); CAD weight from BOM is exact (e.g. 0.04916)
     raw_n = stamp.get('output_wt', '')
     cad_net = child_part.get('cad_wt', '') if child_part else ''
     try:
@@ -799,15 +742,12 @@ def write_excel(data, template_path, out_path):
     except:
         if raw_n: sv(ws_rm, r, 18, raw_n)
 
-    # Col Q (17): Scrap — formula
     ws_rm.cell(row=r, column=17, value='=P3-R3')
-    # Col S (19): Yield % — formula
     ws_rm.cell(row=r, column=19, value='=R3/P3*100')
 
     # ── Inhouse Process ───────────────────────────────────────────────────
     ws_proc = wb['Inhouse Process']
 
-    # For Excel source: rows already populated, copy verbatim
     if source == 'excel' and process_rows:
         for idx, prow in enumerate(process_rows, start=3):
             sv(ws_proc, idx, 1,  prow.get('level'))
@@ -829,6 +769,9 @@ def write_excel(data, template_path, out_path):
             sv(ws_proc, idx, 17, prow.get('p2_uom'))
             sv(ws_proc, idx, 18, prow.get('p2_val'))
             sv(ws_proc, idx, 19, prow.get('remarks'))
+
+        # Copy data validations from template before saving
+        copy_data_validations(template_wb, wb)
         wb.save(str(out_path))
         return flags
 
@@ -862,7 +805,6 @@ def write_excel(data, template_path, out_path):
     sub_forming    = find_in_lib(['forming'],              sub_vals)
     sub_pierc1     = find_in_lib(['piercing', '1'],        sub_vals, prefer_no_suffix=False)
     sub_pierc2     = find_in_lib(['piercing', '2'],        sub_vals, prefer_no_suffix=False)
-    # Prefer 'Piercing 1/2' over 'Cam Piercing 1/2'
     for sv_name, terms in [('sub_pierc1', ['piercing','1']), ('sub_pierc2', ['piercing','2'])]:
         matches = [v for v in sub_vals if all(t in v.lower() for t in terms)]
         plain   = [m for m in matches if m.lower().startswith('piercing')]
@@ -870,7 +812,6 @@ def write_excel(data, template_path, out_path):
             if sv_name == 'sub_pierc1': sub_pierc1 = plain[0]
             else:                       sub_pierc2 = plain[0]
 
-    # ── Categorise PDF tool ops into named slots (first-match-wins = RH data) ─
     cats = {k: None for k in ['BLANK','FORMING','PIERC1','PIERC2','INSPECT']}
     for op in tool_ops:
         u = (op.get('raw_name') or '').upper()
@@ -889,7 +830,6 @@ def write_excel(data, template_path, out_path):
         elif 'FORM' in u and not is_blank  and cats['FORMING'] is None: cats['FORMING'] = op
 
     def press_tc(op):
-        """Press type from PDF, title-cased."""
         v = (op or {}).get('press', '')
         return title_case(v) if v and v == v.upper() else v
 
@@ -907,8 +847,6 @@ def write_excel(data, template_path, out_path):
         FAB = ('fabricat', 'cast', 'weld', 'machined', 'forged')
         return tc if any(k in tc.lower() for k in FAB) else ''
 
-    # ── Determine identity values from BOM ────────────────────────────────
-    # Assembly part (level=0 or sno='1' with no dot)
     assy_pno = assy_desc = ''
     for bom_r in range(2, ws_bom.max_row + 1):
         lvl = str(ws_bom.cell(bom_r, 1).value or '').strip()
@@ -917,14 +855,12 @@ def write_excel(data, template_path, out_path):
             assy_desc = str(ws_bom.cell(bom_r, 3).value or '').strip()
             break
 
-    # Child part (level=1, not BOU/BOP)
     child_pno = child_desc = ''
     for p in bom:
         sno = str(p.get('sno', '')).strip()
         tp  = str(p.get('type_part', '')).upper()
         if '.' in sno and tp not in ('BOU', 'BOP'):
             child_pno = str(p['part_no']).strip()
-            # look up desc from BOM sheet
             for bom_r in range(2, ws_bom.max_row + 1):
                 if str(ws_bom.cell(bom_r, 2).value or '').strip() == child_pno:
                     child_desc = str(ws_bom.cell(bom_r, 3).value or '').strip()
@@ -935,16 +871,8 @@ def write_excel(data, template_path, out_path):
     try:    gross = float(gross_val) if gross_val else ''
     except: gross = gross_val
 
-    cur = 3  # start writing process rows at R3
+    cur = 3
 
-    # ── Row layout (matches reference):
-    # R3:  level=0, assy pno  — Riveting  (assembly op, from PDF page 4 / Library)
-    # R4:  level=None          — Inspection assy (continuation, no identity)
-    # R5:  level=1, child pno — Shearing  (first child op; gross weight as P1 value)
-    # R6+: level=None          — Stamping ops (blank, forming, pierc1, pierc2, inspect)
-
-    # ── R3: Assembly — Riveting ────────────────────────────────────────────
-    # FTG name and sub-op name come from PDF page 4 (parser already cleaned OCR + added side)
     assy_ops = data.get('assy_ops', [])
     rivet_aop      = next((a for a in assy_ops if a.get('is_orbital')), None)
     insp_aop       = next((a for a in assy_ops if not a.get('is_orbital') and a.get('ftg_desc')), None)
@@ -953,6 +881,7 @@ def write_excel(data, template_path, out_path):
     rivet_sub_nm   = rivet_aop['sub_op_name'] if rivet_aop else ''
     insp_sub_nm    = insp_aop['sub_op_name']  if insp_aop  else ''
 
+    # ── R3: Assembly — Riveting ────────────────────────────────────────────
     sv(ws_proc, cur, 1, '0');        sv(ws_proc, cur, 2, assy_pno);  sv(ws_proc, cur, 3, assy_desc)
     sv(ws_proc, cur, 4, mfg_others); sv(ws_proc, cur, 5, sub_rivet)
     if rivet_sub_nm: sv(ws_proc, cur, 6, rivet_sub_nm)
@@ -960,7 +889,6 @@ def write_excel(data, template_path, out_path):
     sv(ws_proc, cur, 8, ftg_fix_mm)
     if rivet_ftg_name: sv(ws_proc, cur, 9, rivet_ftg_name)
     sv(ws_proc, cur, 10, 1)
-    # Machine make/spec for assembly ops not in PDF — left blank for manual entry
     sv(ws_proc, cur, 13, p1t_strokes); sv(ws_proc, cur, 14, p1u_nos); sv(ws_proc, cur, 15, 1)
     cur += 1
 
@@ -977,15 +905,13 @@ def write_excel(data, template_path, out_path):
     # ── R5: Child — Shearing ──────────────────────────────────────────────
     sv(ws_proc, cur, 1, '1');          sv(ws_proc, cur, 2, child_pno);  sv(ws_proc, cur, 3, child_desc)
     sv(ws_proc, cur, 4, mfg_others);   sv(ws_proc, cur, 5, sub_shear);  sv(ws_proc, cur, 7, 10)
-    # no FTG for shearing
-    # Shearing machine make/spec not available in PDF — left blank for manual entry
     sv(ws_proc, cur, 13, p1t_weight);  sv(ws_proc, cur, 14, p1u_kgs);   sv(ws_proc, cur, 15, gross)
     cur += 1
 
     # ── R6+: Stamping ops ─────────────────────────────────────────────────
-    # Each row: no identity cols (level/pno/desc blank after shearing establishes them)
+    # col 11 = Machine Make → hardcoded to IGSEC for all stamping ops
+    # col 12 = Machine Spec (press type from PDF)
     stamping_ops = [
-        # (cat_key, sub_op, op_num)
         ('BLANK',   sub_blank,   20),
         ('FORMING', sub_forming, 30),
         ('PIERC1',  sub_pierc1,  40),
@@ -1005,15 +931,17 @@ def write_excel(data, template_path, out_path):
 
         if cat_key == 'INSPECT':
             sv(ws_proc, cur, 4, mfg_others)
-            sv(ws_proc, cur, 5, sub_val);    sv(ws_proc, cur, 7, op_num)
+            sv(ws_proc, cur, 5, sub_val);      sv(ws_proc, cur, 7, op_num)
             sv(ws_proc, cur, 8, ftg_gauge_mm); sv(ws_proc, cur, 9, ftg_name); sv(ws_proc, cur, 10, 1 if ftg_name else '')
             sv(ws_proc, cur, 13, p1t_others);  sv(ws_proc, cur, 14, p1u_nos); sv(ws_proc, cur, 15, 1)
         else:
             sv(ws_proc, cur, 4, mfg_sheetmetal)
-            sv(ws_proc, cur, 5, sub_val);    sv(ws_proc, cur, 7, op_num)
-            sv(ws_proc, cur, 8, ftg_tool_mm); sv(ws_proc, cur, 9, ftg_name); sv(ws_proc, cur, 10, 1 if ftg_name else '')
-            # Machine make not in PDF — left blank
-            sv(ws_proc, cur, 12, prs)  # press type from PDF
+            sv(ws_proc, cur, 5, sub_val);      sv(ws_proc, cur, 7, op_num)
+            sv(ws_proc, cur, 8, ftg_tool_mm);  sv(ws_proc, cur, 9, ftg_name); sv(ws_proc, cur, 10, 1 if ftg_name else '')
+            # ── Machine Make: hardcoded to IGSEC for Blank / Forming / Piercing ──
+            sv(ws_proc, cur, 11, MACHINE_MAKE_STAMPING)
+            # Machine Spec: press type from PDF
+            sv(ws_proc, cur, 12, prs)
             sv(ws_proc, cur, 13, p1t_pstroke); sv(ws_proc, cur, 14, p1u_nos)
             sv(ws_proc, cur, 15, pp if pp != '' else '')
             if ton:
@@ -1021,6 +949,9 @@ def write_excel(data, template_path, out_path):
             if con:
                 sv(ws_proc, cur, 19, con)
         cur += 1
+
+    # ── Restore data validations from template (fixes dropdown accessibility) ──
+    copy_data_validations(template_wb, wb)
 
     wb.save(str(out_path))
     return flags
@@ -1041,7 +972,6 @@ import tempfile, shutil
 from pathlib import Path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="TSO Converter",
     page_icon="📋",
@@ -1049,7 +979,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Minimal custom styling ────────────────────────────────────────────────────
 st.markdown("""
 <style>
     .block-container { padding-top: 2rem; max-width: 760px; }
@@ -1064,13 +993,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── Header ────────────────────────────────────────────────────────────────────
 st.title("TSO Converter")
 st.caption("Upload a TSO source file (PDF or Excel) + the M&M TSO Download template → get a populated Excel ready for upload.")
 
 st.divider()
 
-# ── File uploaders ─────────────────────────────────────────────────────────────
 col1, col2 = st.columns(2)
 
 with col1:
@@ -1098,7 +1025,6 @@ with col2:
 
 st.divider()
 
-# ── Convert button ─────────────────────────────────────────────────────────────
 if not input_file or not template_file:
     st.info("Upload both files above to enable conversion.", icon="ℹ️")
     st.stop()
@@ -1122,7 +1048,6 @@ if st.button("Convert to Excel", type="primary", use_container_width=True):
 
                 output_bytes = out_path.read_bytes()
 
-            # ── Results ───────────────────────────────────────────────────────
             st.success("Conversion complete!", icon="✅")
 
             m1, m2, m3, m4 = st.columns(4)
@@ -1153,6 +1078,5 @@ if st.button("Convert to Excel", type="primary", use_container_width=True):
             with st.expander("Error details"):
                 st.code(traceback.format_exc())
 
-# ── Footer ────────────────────────────────────────────────────────────────────
 st.divider()
 st.caption("TSO Converter v4 · Supports PDF and Excel input · All dropdowns sourced from Library sheet at runtime")
