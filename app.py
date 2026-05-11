@@ -520,13 +520,16 @@ def parse_excel(excel_path):
             r3 = [ws.cell(3, c).value for c in range(1, ws.max_column + 1)]
             print(f"[DEBUG] Row 3 length: {len(r3)}")
             print(f"[DEBUG] Row 3 cols 1-10: {r3[0:10]}")
-            if len(r3) > 17:
-                print(f"[DEBUG] Row 3 cols 15-18: {r3[15:18]}")
+            if len(r3) > 16:
+                print(f"[DEBUG] Row 3 cols 14-18 (indices 13-17): {r3[13:18]}")
+            # FIX: Column mapping for Inhouse RM:
+            # Excel columns (1-based): 5=RM Grade, 12=Thickness, 15=Gross Value, 17=Net Value
+            # List indices (0-based):   4=RM Grade, 11=Thickness, 14=Gross Value, 16=Net Value
             data['inhouse_rm'] = {
-                'input_wt':  cl(r3[15]) if len(r3) > 15 else '',
-                'output_wt': cl(r3[17]) if len(r3) > 17 else '',
-                'blank_thk': cl(r3[12]) if len(r3) > 12 else '',
-                'rm_grade':  cl(r3[4])  if len(r3) > 4  else '',
+                'input_wt':  cl(r3[14]) if len(r3) > 14 else '',  # Column 15 (Gross Value)
+                'output_wt': cl(r3[16]) if len(r3) > 16 else '',  # Column 17 (Net Value)
+                'blank_thk': cl(r3[11]) if len(r3) > 11 else '',  # Column 12 (Thickness)
+                'rm_grade':  cl(r3[4])  if len(r3) > 4  else '',   # Column 5 (RM Grade)
             }
             print(f"[DEBUG] Extracted inhouse_rm: {data['inhouse_rm']}")
             if len(r3) > 5 and r3[5]:
@@ -534,7 +537,7 @@ def parse_excel(excel_path):
                 for p in data['bom']:
                     if p['part_no'] == child_pno or child_pno in p['part_no']:
                         p['material'] = cl(r3[5])
-                        p['thickness'] = cl(r3[12]) if len(r3) > 12 else ''
+                        p['thickness'] = cl(r3[11]) if len(r3) > 11 else ''  # Fixed index
                         break
         else:
             print(f"[DEBUG] 'Inhouse RM' sheet exists but max_row < 3")
