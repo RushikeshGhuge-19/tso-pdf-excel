@@ -285,8 +285,6 @@ def parse_pdf(pdf_path):
 
     with pdfplumber.open(pdf_path) as pdf:
 
-    with pdfplumber.open(pdf_path) as pdf:
-
         # Page 1: meta
         if pdf.pages:
             for row in (pdf.pages[0].extract_tables() or [[]])[0]:
