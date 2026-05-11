@@ -331,12 +331,16 @@ def parse_pdf(pdf_path):
         # Page 3: RM + tool ops
         if len(pdf.pages) >= 3:
             tbls = pdf.pages[2].extract_tables()
-            if not tbls: return data
+            if not tbls: 
+                print("[DEBUG] No tables found on page 3")
+                return data
             tbl = tbls[0]
+            print(f"[DEBUG] Page 3: {len(tbl)} rows x {len(tbl[0]) if tbl else 0} cols")
             main_idx = None
             for idx, row in enumerate(tbl):
                 rc = [cl(c) for c in row]
                 if rc and rc[0] == '1':
+                    print(f"[DEBUG] Found '1' at row {idx}, cols={len(rc)}")
                     main_idx = idx
                     # Try NEW format cols first (14, 34-35), fallback to OLD (17, 32-33)
                     blank_thk = ''
@@ -359,17 +363,38 @@ def parse_pdf(pdf_path):
                     }
                     break
             
-            if main_idx is None: return data
+            if main_idx is None: 
+                print("[DEBUG] Row with '1' not found")
+                return data
             
             # Extract RM weights from main row (NEW format: cols 34-35, OLD format: cols 32-33)
             main_rc = [cl(c) for c in tbl[main_idx]]
+            
+            # DEBUG: Print table info
+            print(f"[DEBUG] Main row index: {main_idx}")
+            print(f"[DEBUG] Main row length: {len(main_rc)}")
+            if len(main_rc) > 35:
+                print(f"[DEBUG] NEW format cols available: 34='{main_rc[34]}', 35='{main_rc[35]}'")
+            if len(main_rc) > 33:
+                print(f"[DEBUG] OLD format cols available: 32='{main_rc[32]}', 33='{main_rc[33]}'")
+            
             # Try NEW format first (34-35), fallback to OLD (32-33)
-            if len(main_rc) > 35 and main_rc[34] and main_rc[35]:
-                data['inhouse_rm']['input_wt']  = main_rc[34]
-                data['inhouse_rm']['output_wt'] = main_rc[35]
-            elif len(main_rc) > 33 and main_rc[32] and main_rc[33]:
-                data['inhouse_rm']['input_wt']  = main_rc[32]
-                data['inhouse_rm']['output_wt'] = main_rc[33]
+            # FIX: Check column existence first, then extract value (even if empty)
+            if len(main_rc) > 35:
+                w1 = main_rc[34]
+                w2 = main_rc[35]
+                if w1 or w2:  # At least one weight exists
+                    data['inhouse_rm']['input_wt']  = w1 if w1 else ''
+                    data['inhouse_rm']['output_wt'] = w2 if w2 else ''
+                    print(f"[DEBUG] Using NEW format: input_wt='{w1}', output_wt='{w2}'")
+            
+            if not data['inhouse_rm']['input_wt'] and len(main_rc) > 33:
+                w1 = main_rc[32]
+                w2 = main_rc[33]
+                if w1 or w2:  # At least one weight exists
+                    data['inhouse_rm']['input_wt']  = w1 if w1 else ''
+                    data['inhouse_rm']['output_wt'] = w2 if w2 else ''
+                    print(f"[DEBUG] Using OLD format: input_wt='{w1}', output_wt='{w2}'")
 
             # FIX: corrected column mapping for NEW format.
             # NEW: [42]=name_part1, [43]=name_part2, [44]=L, [45]=W, [46]=H,
@@ -490,14 +515,20 @@ def parse_excel(excel_path):
     # ── Inhouse RM ────────────────────────────────────────────────────────
     if 'Inhouse RM' in wb.sheetnames:
         ws = wb['Inhouse RM']
+        print(f"[DEBUG] 'Inhouse RM' sheet found, max_row={ws.max_row}")
         if ws.max_row >= 3:
             r3 = [ws.cell(3, c).value for c in range(1, ws.max_column + 1)]
+            print(f"[DEBUG] Row 3 length: {len(r3)}")
+            print(f"[DEBUG] Row 3 cols 1-10: {r3[0:10]}")
+            if len(r3) > 17:
+                print(f"[DEBUG] Row 3 cols 15-18: {r3[15:18]}")
             data['inhouse_rm'] = {
                 'input_wt':  cl(r3[15]) if len(r3) > 15 else '',
                 'output_wt': cl(r3[17]) if len(r3) > 17 else '',
                 'blank_thk': cl(r3[12]) if len(r3) > 12 else '',
                 'rm_grade':  cl(r3[4])  if len(r3) > 4  else '',
             }
+            print(f"[DEBUG] Extracted inhouse_rm: {data['inhouse_rm']}")
             if len(r3) > 5 and r3[5]:
                 child_pno = cl(r3[1]) if len(r3) > 1 else ''
                 for p in data['bom']:
@@ -505,6 +536,8 @@ def parse_excel(excel_path):
                         p['material'] = cl(r3[5])
                         p['thickness'] = cl(r3[12]) if len(r3) > 12 else ''
                         break
+        else:
+            print(f"[DEBUG] 'Inhouse RM' sheet exists but max_row < 3")
 
     # ── Inhouse Process ────────────────────────────────────────────────────
     if 'Inhouse Process' in wb.sheetnames:
@@ -565,11 +598,21 @@ def parse_input(input_path):
     """Parse PDF or Excel input. Returns unified data dict."""
     suffix = Path(str(input_path)).suffix.lower()
     if suffix == '.pdf':
-        return parse_pdf(input_path)
+        data = parse_pdf(input_path)
     elif suffix in ('.xlsx', '.xls', '.xlsm'):
-        return parse_excel(input_path)
+        data = parse_excel(input_path)
     else:
         raise ValueError(f"Unsupported file type: {suffix}. Use .pdf or .xlsx")
+    
+    # Print summary
+    print("\n" + "="*80)
+    print("EXTRACTION SUMMARY")
+    print("="*80)
+    print(f"Source: {data.get('source', 'unknown').upper()}")
+    print(f"inhouse_rm: {data.get('inhouse_rm', {})}")
+    print("="*80 + "\n")
+    
+    return data
 
 
 # ─────────────────────────────────────────────────────────────────────────────
