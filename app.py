@@ -1,4 +1,4 @@
-TSO Converter  (v4.2 — FIXED Inhouse RM extraction)
+'''TSO Converter  (v4.2 — FIXED Inhouse RM extraction)
 ========================================================
 Accepts either a TSO PDF or a filled TSO Excel as input source.
 
@@ -21,7 +21,7 @@ FIX v4.1:
 - Page 3 weight cols: 32-33 -> 34-35 (NEW format) with fallback to 32-33 (OLD)
 - Page 3 tool name cols: 40-41 -> 42-43 (NEW format) with fallback to 40-41 (OLD)
 - Added PROC_RULES for: DRAW, TRIMMING, FLANGE, RESTRIKE, PART OFF
-"""
+'''
 
 import sys, re, shutil, io
 from pathlib import Path
