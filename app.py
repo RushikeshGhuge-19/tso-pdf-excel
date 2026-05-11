@@ -285,6 +285,8 @@ def parse_pdf(pdf_path):
 
     with pdfplumber.open(pdf_path) as pdf:
 
+    with pdfplumber.open(pdf_path) as pdf:
+
         # Page 1: meta
         if pdf.pages:
             for row in (pdf.pages[0].extract_tables() or [[]])[0]:
@@ -356,10 +358,14 @@ def parse_pdf(pdf_path):
                         rm_grade = rc[10]
                     
                     data['inhouse_rm'] = {
-                        'input_wt':   '',
-                        'output_wt':  '',
-                        'blank_thk':  blank_thk,
                         'rm_grade':   rm_grade,
+                        'length':     '',
+                        'blank_thk':  blank_thk,
+                        'od':         '',
+                        'density':    '',
+                        'input_wt':   '',
+                        'scrap_value': '',
+                        'output_wt':  '',
                     }
                     break
             
@@ -521,15 +527,20 @@ def parse_excel(excel_path):
             print(f"[DEBUG] Row 3 length: {len(r3)}")
             print(f"[DEBUG] Row 3 cols 1-10: {r3[0:10]}")
             if len(r3) > 16:
-                print(f"[DEBUG] Row 3 cols 14-18 (indices 13-17): {r3[13:18]}")
-            # FIX: Column mapping for Inhouse RM:
-            # Excel columns (1-based): 5=RM Grade, 12=Thickness, 15=Gross Value, 17=Net Value
-            # List indices (0-based):   4=RM Grade, 11=Thickness, 14=Gross Value, 16=Net Value
+                print(f"[DEBUG] Row 3 cols 9-18 (indices 8-17): {r3[8:18]}")
+            # FIX: Column mapping for Inhouse RM (0-based indices):
+            # Col 5 (idx 4)=RM Grade, Col 10 (idx 9)=Length, Col 12 (idx 11)=Thickness
+            # Col 13 (idx 12)=OD, Col 14 (idx 13)=Density, Col 15 (idx 14)=Gross Value
+            # Col 16 (idx 15)=Scrap Value, Col 17 (idx 16)=Net Value
             data['inhouse_rm'] = {
-                'input_wt':  cl(r3[14]) if len(r3) > 14 else '',  # Column 15 (Gross Value)
-                'output_wt': cl(r3[16]) if len(r3) > 16 else '',  # Column 17 (Net Value)
-                'blank_thk': cl(r3[11]) if len(r3) > 11 else '',  # Column 12 (Thickness)
-                'rm_grade':  cl(r3[4])  if len(r3) > 4  else '',   # Column 5 (RM Grade)
+                'rm_grade':   cl(r3[4])  if len(r3) > 4  else '',   # Column 5 (RM Grade)
+                'length':     cl(r3[9])  if len(r3) > 9  else '',   # Column 10 (Length)
+                'blank_thk':  cl(r3[11]) if len(r3) > 11 else '',   # Column 12 (Thickness)
+                'od':         cl(r3[12]) if len(r3) > 12 else '',   # Column 13 (OD)
+                'density':    cl(r3[13]) if len(r3) > 13 else '',   # Column 14 (Density)
+                'input_wt':   cl(r3[14]) if len(r3) > 14 else '',   # Column 15 (Gross Value)
+                'scrap_value': cl(r3[15]) if len(r3) > 15 else '',  # Column 16 (Scrap Value)
+                'output_wt':  cl(r3[16]) if len(r3) > 16 else '',   # Column 17 (Net Value)
             }
             print(f"[DEBUG] Extracted inhouse_rm: {data['inhouse_rm']}")
             if len(r3) > 5 and r3[5]:
