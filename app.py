@@ -120,6 +120,25 @@ PROC_RULES = [
      ['parts/stroke'],   ['nos'],                  [],                     []),
     (['RIVET'],          ['riveting'],              ['others'],             ['fixture','m&m'],
      ['parts/stroke'],   ['nos'],                  [],                     []),
+    # Drawing operation
+    (['DRAW'],           ['drawing'],                ['sheet metal','cold'], ['tool','m&m'],
+    ['parts/stroke'],   ['nos'],                   ['tonnage'],            ['others']),
+
+    # Trimming operation  
+    (['TRIM'],           ['trimming'],               ['sheet metal','cold'], ['tool','m&m'],
+    ['parts/stroke'],   ['nos'],                   ['tonnage'],            ['others']),
+
+    # Flange operation
+    (['FLANGE'],         ['flanging'],               ['sheet metal','cold'], ['tool','m&m'],
+    ['parts/stroke'],   ['nos'],                   ['tonnage'],            ['others']),
+
+    # Restrike operation
+    (['RESTRIKE'],       ['restrike'],               ['sheet metal','cold'], ['tool','m&m'],
+    ['parts/stroke'],   ['nos'],                   ['tonnage'],            ['others']),
+
+    # Part off (cutoff/separation)
+    (['PART','OFF'],     ['cut off'],                ['sheet metal','cold'], ['tool','m&m'],
+    ['parts/stroke'],   ['nos'],                   ['tonnage'],            ['others']),
 ]
 
 
