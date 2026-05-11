@@ -797,10 +797,14 @@ def write_excel(data, template_path, out_path):
     # FIX: prefer template exact net weight over PDF-rounded value when template has it
     raw_g = stamp.get('input_wt', '')
     raw_n = stamp.get('output_wt', '')
-    tpl_gross = tpl_rm3[15] if len(tpl_rm3) > 15 else None
-    tpl_net   = tpl_rm3[17] if len(tpl_rm3) > 17 else None
-    try:    sv(ws, r, 16, float(raw_g) if raw_g else tpl_gross)
-    except: sv(ws, r, 16, raw_g or tpl_gross)
+    # FIX: Column mapping for template row (0-based indices):
+    # Column 15 (O) = Gross Value → index 14
+    # Column 17 (Q) = Net Value → index 16
+    tpl_gross = tpl_rm3[14] if len(tpl_rm3) > 14 else None
+    tpl_net   = tpl_rm3[16] if len(tpl_rm3) > 16 else None
+    # Write Gross Value to column 15 (O)
+    try:    sv(ws, r, 15, float(raw_g) if raw_g else tpl_gross)
+    except: sv(ws, r, 15, raw_g or tpl_gross)
     # Use template net if it's more precise than PDF (PDF often rounds to 3dp)
     try:
         pdf_net = float(raw_n) if raw_n else None
@@ -808,17 +812,19 @@ def write_excel(data, template_path, out_path):
         if tpl_net_f is not None and pdf_net is not None:
             # Use template if it differs from PDF only by rounding
             if abs(round(tpl_net_f, 3) - round(pdf_net, 3)) < 0.001:
-                sv(ws, r, 18, tpl_net_f)
+                sv(ws, r, 17, tpl_net_f)
             else:
-                sv(ws, r, 18, pdf_net)
+                sv(ws, r, 17, pdf_net)
         elif tpl_net_f is not None:
-            sv(ws, r, 18, tpl_net_f)
+            sv(ws, r, 17, tpl_net_f)
         else:
-            sv(ws, r, 18, pdf_net or tpl_net)
+            sv(ws, r, 17, pdf_net or tpl_net)
     except:
-        sv(ws, r, 18, raw_n or tpl_net)
-    ws.cell(row=r, column=17, value='=P3-R3')
-    ws.cell(row=r, column=19, value='=R3/P3*100')
+        sv(ws, r, 17, raw_n or tpl_net)
+    # Formula for Net Value (Q3) = Gross (O3) - Scrap (P3)
+    ws.cell(row=r, column=17, value='=O3-P3')
+    # Formula for Yield % (R3) = Net (Q3) / Gross (O3) * 100
+    ws.cell(row=r, column=18, value='=Q3/O3*100')
 
     # ── Inhouse Process ───────────────────────────────────────────────────
     ws = wb['Inhouse Process']
