@@ -495,20 +495,16 @@ def parse_excel(excel_path):
         if ws.max_row >= 3:
             r3 = [ws.cell(3, c).value for c in range(1, ws.max_column + 1)]
             # Template Inhouse RM col mapping (1-based):
-            # 5=RM Grade, 10=Length, 12=Thickness, 13=OD, 14=Density
-            # 15=Gross Value (was 16 in old buggy code), 16=Scrap, 17=Net Value, 18=Yield%
-            # Wait — when reading from a FILLED Excel we read what's already there.
-            # The filled Excel was produced by the OLD buggy code, so we read col15=Density etc.
-            # For Excel source, we just copy process_rows directly so this mapping only
-            # affects the 'meta' data passed forward — not critical. Keep as-is.
+            # 5=RM Grade, 9=Parameter, 10=UOM, 11=Length, 12=Width, 13=Height, 14=Thickness
+            # 15=OD, 16=Density, 17=Gross Value, 18=Scrap, 19=Net Value, 20=Yield%
             data['inhouse_rm'] = {
                 'rm_grade':    cl(r3[4])  if len(r3) > 4  else '',
-                'length':      cl(r3[9])  if len(r3) > 9  else '',
-                'width':       cl(r3[10]) if len(r3) > 10 else '',
-                'height':      cl(r3[11]) if len(r3) > 11 else '',
-                'blank_thk':   cl(r3[12]) if len(r3) > 12 else '',
-                'od':          cl(r3[13]) if len(r3) > 13 else '',
-                'density':     cl(r3[14]) if len(r3) > 14 else '',
+                'length':      cl(r3[10]) if len(r3) > 10 else '',
+                'width':       cl(r3[11]) if len(r3) > 11 else '',
+                'height':      cl(r3[12]) if len(r3) > 12 else '',
+                'blank_thk':   cl(r3[13]) if len(r3) > 13 else '',
+                'od':          cl(r3[14]) if len(r3) > 14 else '',
+                'density':     cl(r3[15]) if len(r3) > 15 else '',
                 'input_wt':    cl(r3[16]) if len(r3) > 16 else '',  # col 17 = Gross
                 'scrap_value': cl(r3[17]) if len(r3) > 17 else '',  # col 18 = Scrap
                 'output_wt':   cl(r3[18]) if len(r3) > 18 else '',  # col 19 = Net
@@ -696,49 +692,54 @@ def write_excel(data, template_path, out_path):
     if not ws.cell(r, 8).value:
         sv(ws, r, 8, 'India')
 
-    # Parameter (col 9) / UOM (col 10)
+    # Parameter (col 9) / UOM (col 10) / Length (col 11) / Width (col 12) / Height (col 13) / Thickness (col 14)
     rm_param = find_in_lib(['weight'], lib.get('AE', [])) or 'Weight'
     rm_uom   = find_in_lib(['kg'],    lib.get('AF', [])) or 'Kg'
-    # Length (col 10), Width (col 11), Height (col 12), Thickness (col 13)
     rm_length = stamp.get('length', '')
     rm_width = stamp.get('width', '')
     rm_height = stamp.get('height', '')
     rm_thickness = (child_part.get('thickness', '') if child_part else '') or stamp.get('blank_thk', '')
     
+    if not ws.cell(r, 9).value and rm_param: 
+        sv(ws, r, 9, rm_param)
+    if not ws.cell(r, 10).value and rm_uom: 
+        sv(ws, r, 10, rm_uom)
     if rm_length:
-        sv(ws, r, 10, rm_length)
+        sv(ws, r, 11, rm_length)
     if rm_width:
-        sv(ws, r, 11, rm_width)
+        sv(ws, r, 12, rm_width)
     if rm_height:
-        sv(ws, r, 12, rm_height)
+        sv(ws, r, 13, rm_height)
     if rm_thickness:
-        sv(ws, r, 13, rm_thickness)
+        sv(ws, r, 14, rm_thickness)
 
     # FIX v4.2 BUG 4: correct Inhouse RM column mapping
-    # Actual template columns:
-    #   Col 15 = Density (Kg/m3)   ← do NOT overwrite with gross weight
-    #   Col 16 = Gross Value        ← write input_wt here
-    #   Col 17 = Scrap Value        ← write 0 (default; user fills actual)
-    #   Col 18 = Net Value          ← formula =P3-Q3
-    #   Col 19 = Yield %            ← formula =R3/P3*100
+    # Actual template columns (after adding Length/Width/Height):
+    #   Col 14 = Thickness (mm)
+    #   Col 15 = OD (mm)
+    #   Col 16 = Density (Kg/m3)   ← do NOT overwrite with gross weight
+    #   Col 17 = Gross Value        ← write input_wt here
+    #   Col 18 = Scrap Value        ← write 0 (default; user fills actual)
+    #   Col 19 = Net Value          ← formula =S3-T3
+    #   Col 20 = Yield %            ← formula =T3/S3*100
     raw_g = stamp.get('input_wt', '')
     try:
         gross_float = float(raw_g) if raw_g else None
     except (ValueError, TypeError):
         gross_float = None
 
-    # Col 16 = Gross Value
-    tpl_gross = tpl_rm3[15] if len(tpl_rm3) > 15 else None   # index 15 = col 16
-    sv(ws, r, 16, gross_float if gross_float is not None else tpl_gross)
+    # Col 17 = Gross Value
+    tpl_gross = tpl_rm3[16] if len(tpl_rm3) > 16 else None   # index 16 = col 17
+    sv(ws, r, 17, gross_float if gross_float is not None else tpl_gross)
 
-    # Col 17 = Scrap Value (default 0; user fills actual scrap)
-    ws.cell(row=r, column=17, value=0)
+    # Col 18 = Scrap Value (default 0; user fills actual scrap)
+    ws.cell(row=r, column=18, value=0)
 
-    # Col 18 = Net Value formula (Gross - Scrap = P3 - Q3)
-    ws.cell(row=r, column=18, value='=P3-Q3')
+    # Col 19 = Net Value formula (Gross - Scrap = S3 - T3)
+    ws.cell(row=r, column=19, value='=S3-T3')
 
-    # Col 19 = Yield % formula (Net/Gross * 100 = R3/P3*100)
-    ws.cell(row=r, column=19, value='=R3/P3*100')
+    # Col 20 = Yield % formula (Net/Gross * 100 = T3/S3*100)
+    ws.cell(row=r, column=20, value='=T3/S3*100')
 
     # ── Inhouse Process ───────────────────────────────────────────────────
     ws = wb['Inhouse Process']
