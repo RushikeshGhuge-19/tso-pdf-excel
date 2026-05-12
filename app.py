@@ -377,21 +377,21 @@ def parse_pdf(pdf_path):
                     data['inhouse_rm']['input_wt']  = weight_rc[34]
                     data['inhouse_rm']['output_wt'] = weight_rc[35]
                     print(f"[DEBUG] NEW format weights: gross={weight_rc[34]}, net={weight_rc[35]}")
-                    # Also try to extract blank dimensions from same row (NEW format)
-                    # Blank dimensions typically come before weights in the row
-                    if len(weight_rc) > 30:
-                        data['inhouse_rm']['length'] = weight_rc[28] if weight_rc[28] else ''
-                        data['inhouse_rm']['width']  = weight_rc[29] if weight_rc[29] else ''
-                        data['inhouse_rm']['height'] = weight_rc[30] if weight_rc[30] else ''
+                    # Debug: print all columns around dimensions
+                    print(f"[DEBUG] Weight row cols 20-35: {weight_rc[20:35]}")
+                    # Blank dimensions typically L, W, H before weights
+                    data['inhouse_rm']['length'] = weight_rc[28] if len(weight_rc) > 28 and weight_rc[28] else ''
+                    data['inhouse_rm']['width']  = weight_rc[29] if len(weight_rc) > 29 and weight_rc[29] else ''
+                    data['inhouse_rm']['height'] = weight_rc[30] if len(weight_rc) > 30 and weight_rc[30] else ''
                 elif len(weight_rc) > 33 and (weight_rc[32] or weight_rc[33]):
                     data['inhouse_rm']['input_wt']  = weight_rc[32]
                     data['inhouse_rm']['output_wt'] = weight_rc[33]
                     print(f"[DEBUG] OLD format weights: gross={weight_rc[32]}, net={weight_rc[33]}")
-                    # Try to extract blank dimensions (OLD format)
-                    if len(weight_rc) > 30:
-                        data['inhouse_rm']['length'] = weight_rc[26] if weight_rc[26] else ''
-                        data['inhouse_rm']['width']  = weight_rc[27] if weight_rc[27] else ''
-                        data['inhouse_rm']['height'] = weight_rc[28] if weight_rc[28] else ''
+                    # Debug: print all columns around dimensions
+                    print(f"[DEBUG] Weight row cols 20-35: {weight_rc[20:35]}")
+                    data['inhouse_rm']['length'] = weight_rc[26] if len(weight_rc) > 26 and weight_rc[26] else ''
+                    data['inhouse_rm']['width']  = weight_rc[27] if len(weight_rc) > 27 and weight_rc[27] else ''
+                    data['inhouse_rm']['height'] = weight_rc[28] if len(weight_rc) > 28 and weight_rc[28] else ''
             else:
                 # Fallback: try main row itself (some older PDF layouts)
                 print("[DEBUG] Weight row not found above main row; trying main row fallback")
