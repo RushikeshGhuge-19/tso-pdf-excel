@@ -377,10 +377,21 @@ def parse_pdf(pdf_path):
                     data['inhouse_rm']['input_wt']  = weight_rc[34]
                     data['inhouse_rm']['output_wt'] = weight_rc[35]
                     print(f"[DEBUG] NEW format weights: gross={weight_rc[34]}, net={weight_rc[35]}")
+                    # Also try to extract blank dimensions from same row (NEW format)
+                    # Blank dimensions typically come before weights in the row
+                    if len(weight_rc) > 30:
+                        data['inhouse_rm']['length'] = weight_rc[28] if weight_rc[28] else ''
+                        data['inhouse_rm']['width']  = weight_rc[29] if weight_rc[29] else ''
+                        data['inhouse_rm']['height'] = weight_rc[30] if weight_rc[30] else ''
                 elif len(weight_rc) > 33 and (weight_rc[32] or weight_rc[33]):
                     data['inhouse_rm']['input_wt']  = weight_rc[32]
                     data['inhouse_rm']['output_wt'] = weight_rc[33]
                     print(f"[DEBUG] OLD format weights: gross={weight_rc[32]}, net={weight_rc[33]}")
+                    # Try to extract blank dimensions (OLD format)
+                    if len(weight_rc) > 30:
+                        data['inhouse_rm']['length'] = weight_rc[26] if weight_rc[26] else ''
+                        data['inhouse_rm']['width']  = weight_rc[27] if weight_rc[27] else ''
+                        data['inhouse_rm']['height'] = weight_rc[28] if weight_rc[28] else ''
             else:
                 # Fallback: try main row itself (some older PDF layouts)
                 print("[DEBUG] Weight row not found above main row; trying main row fallback")
@@ -393,6 +404,8 @@ def parse_pdf(pdf_path):
 
             print(f"[DEBUG] Final weights: gross='{data['inhouse_rm']['input_wt']}', "
                   f"net='{data['inhouse_rm']['output_wt']}'")
+            print(f"[DEBUG] Blank dimensions: length='{data['inhouse_rm']['length']}', "
+                  f"width='{data['inhouse_rm']['width']}', height='{data['inhouse_rm']['height']}'")
 
             # Tool op extraction
             def extract_op(rc, n1, n2, lc):
@@ -650,9 +663,9 @@ def write_excel(data, template_path, out_path):
     ws = wb['Inhouse RM']
     r  = 3
 
-    # Write template structural cols (skip the 4 computed cols 16-19)
+    # Write template structural cols (skip the 4 computed cols 17-20: Gross, Scrap, Net, Yield)
     for col, val in enumerate(tpl_rm3, 1):
-        if col in (16, 17, 18, 19): continue
+        if col in (17, 18, 19, 20): continue
         sv(ws, r, col, val)
 
     # FIX v4.2 BUG 1: child_part now correctly found via type_part for PDF source
