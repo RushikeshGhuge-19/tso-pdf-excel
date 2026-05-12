@@ -377,12 +377,10 @@ def parse_pdf(pdf_path):
                     data['inhouse_rm']['input_wt']  = weight_rc[34]
                     data['inhouse_rm']['output_wt'] = weight_rc[35]
                     print(f"[DEBUG] NEW format weights: gross={weight_rc[34]}, net={weight_rc[35]}")
-                    # Debug: print all columns around dimensions
-                    print(f"[DEBUG] Weight row cols 20-35: {weight_rc[20:35]}")
-                    # Blank dimensions typically L, W, H before weights
-                    data['inhouse_rm']['length'] = weight_rc[28] if len(weight_rc) > 28 and weight_rc[28] else ''
-                    data['inhouse_rm']['width']  = weight_rc[29] if len(weight_rc) > 29 and weight_rc[29] else ''
-                    data['inhouse_rm']['height'] = weight_rc[30] if len(weight_rc) > 30 and weight_rc[30] else ''
+                    # Dimensions are at cols 15, 16, 17 in NEW format
+                    data['inhouse_rm']['length'] = weight_rc[15] if len(weight_rc) > 15 and weight_rc[15] else ''
+                    data['inhouse_rm']['width']  = weight_rc[16] if len(weight_rc) > 16 and weight_rc[16] else ''
+                    data['inhouse_rm']['height'] = weight_rc[17] if len(weight_rc) > 17 and weight_rc[17] else ''
                 elif len(weight_rc) > 33 and (weight_rc[32] or weight_rc[33]):
                     data['inhouse_rm']['input_wt']  = weight_rc[32]
                     data['inhouse_rm']['output_wt'] = weight_rc[33]
